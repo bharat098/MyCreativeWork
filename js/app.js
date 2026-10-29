@@ -466,10 +466,10 @@ function fileCard(f) {
     <p class="file-name" title="${esc(f.original_name)}">${esc(f.name || f.original_name)}</p>
     <p class="file-meta">${formatBytes(f.file_size)} · ${esc((f.extension||'').toUpperCase())}</p>
     ${State.isAdmin ? `
-    <div class="card-actions" onclick="event.stopPropagation()">
+    <div class="file-card-actions">
       ${f.file_url ? `<a href="${esc(f.file_url)}" target="_blank" class="btn btn-ghost btn-xs">Open</a>` : ''}
       <button class="btn btn-ghost btn-xs" onclick="openMoveModal('${f.id}')">Move</button>
-      <button class="btn btn-ghost btn-xs" onclick="toggleFavorite('${f.id}',${f.is_favorite})">${f.is_favorite?'♥':'♡'}</button>
+      <button class="btn btn-ghost btn-xs fav-btn${f.is_favorite?' active':''}" onclick="toggleFavorite('${f.id}',${f.is_favorite})">${f.is_favorite?'♥':'♡'}</button>
       <button class="btn btn-danger btn-xs" onclick="trashItem('${f.id}')">Del</button>
     </div>` : ''}
   </div>`;
@@ -874,25 +874,59 @@ function queueUpload(file) {
 async function uploadFile(file, itemId) {
   const ext   = file.name.split('.').pop().toLowerCase();
   const ftype = guessFileType(file.type, ext);
-  const path  = `${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
   const setStatus = (msg, cls='') => {
     const el = document.getElementById(`${itemId}-status`);
     if (el) { el.textContent = msg; el.className = `upload-status${cls?' '+cls:''}`; }
   };
   const setBar = pct => { const el = document.getElementById(`${itemId}-bar`); if (el) el.style.width = pct+'%'; };
 
-  const { error } = await db.storage.from('media').upload(path, file, { upsert: false });
-  if (error) { setStatus('Failed', 'error'); toast('Upload failed: ' + error.message, 'error'); return; }
-  setBar(100); setStatus('Saving…');
-  const { data: { publicUrl: fileUrl } } = db.storage.from('media').getPublicUrl(path);
+  // Upload to Cloudinary via unsigned preset (no size limit on free 25GB plan)
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+  formData.append('folder', 'mycreativework');
+
+  let fileUrl, filePath;
+  try {
+    await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.upload.onprogress = e => {
+        if (e.lengthComputable) setBar(Math.round(e.loaded / e.total * 92));
+      };
+      xhr.onload = () => {
+        if (xhr.status === 200) {
+          const r = JSON.parse(xhr.responseText);
+          fileUrl  = r.secure_url;
+          filePath = r.public_id;
+          setBar(100);
+          resolve();
+        } else {
+          let msg = 'Upload failed';
+          try { msg = JSON.parse(xhr.responseText).error?.message || msg; } catch(e) {}
+          console.error('Cloudinary error', xhr.status, xhr.responseText);
+          reject(new Error(msg));
+        }
+      };
+      xhr.onerror = () => reject(new Error('Network error'));
+      xhr.open('POST', `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/auto/upload`);
+      xhr.send(formData);
+    });
+  } catch(err) {
+    setStatus('Failed', 'error');
+    toast('Upload failed: ' + err.message, 'error');
+    return;
+  }
+
+  setStatus('Saving…');
   const folderId = document.getElementById('upload-folder').value || null;
-  await db.from('files').insert({
+  const { error } = await db.from('files').insert({
     name: file.name, original_name: file.name,
-    file_path: path, file_url: fileUrl,
+    file_path: filePath, file_url: fileUrl,
     file_size: file.size, mime_type: file.type,
     file_type: ftype, extension: ext,
     folder_id: folderId,
   });
+  if (error) { setStatus('DB error', 'error'); toast(error.message, 'error'); return; }
   await loadFiles(); setStatus('Done ✓', 'success');
 }
 

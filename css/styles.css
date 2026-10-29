@@ -1180,3 +1180,20 @@ kbd { background: var(--bg); border: 1px solid var(--border); border-radius: 4px
   transform: scale(1) translateY(0);
   transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
 }
+
+/* ── File card admin action bar (always visible, not hover-only) ── */
+.file-card-actions {
+  display: flex;
+  gap: 4px;
+  padding: 6px 8px 8px;
+  border-top: 1px solid var(--border);
+  flex-wrap: wrap;
+  background: var(--bg);
+}
+.file-card-actions .btn-xs {
+  flex: 1;
+  justify-content: center;
+  font-size: 10px;
+  padding: 4px 6px;
+}
+.fav-btn.active { color: #DC2626; }
