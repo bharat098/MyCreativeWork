@@ -535,7 +535,7 @@ function eventCard(ev) {
       ${ev.description ? `<p style="font-size:11px;color:var(--text-secondary);margin-top:4px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${esc(ev.description)}</p>` : ''}
     </div>
     ${State.isAdmin ? `
-    <div class="card-actions" onclick="event.stopPropagation()">
+    <div class="file-card-actions">
       <button class="btn btn-ghost btn-xs" onclick="editEvent('${ev.id}')">Edit</button>
       <button class="btn btn-danger btn-xs" onclick="deleteEvent('${ev.id}')">Del</button>
     </div>` : ''}
@@ -1277,22 +1277,31 @@ function injectPreviewModal() {
         <div class="modal-header-left">
           <div class="modal-header-icon">${videoIcon()}</div>
           <div>
-            <h3 id="preview-title" style="max-width:600px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Preview</h3>
+            <h3 id="preview-title" style="max-width:540px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Preview</h3>
             <p id="preview-meta"></p>
           </div>
         </div>
-        <button class="btn btn-ghost btn-icon" onclick="closePreview()">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-        </button>
+        <div style="display:flex;align-items:center;gap:8px">
+          <button id="preview-edit-btn" class="btn btn-secondary btn-sm" style="display:none" onclick="openEditFileModal(_previewFileId)">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+            Edit
+          </button>
+          <button class="btn btn-ghost btn-icon" onclick="closePreview()">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
       </div>
       <div id="preview-content" style="background:#111;border-radius:0 0 var(--radius-lg) var(--radius-lg);min-height:300px;display:flex;align-items:center;justify-content:center;overflow:hidden"></div>
     </div>
   </div>`);
 }
 
+let _previewFileId = null;
+
 function previewFile(fileId) {
   const f = State.files.find(x => x.id === fileId);
   if (!f) return;
+  _previewFileId = fileId;
   injectPreviewModal();
   document.getElementById('preview-title').textContent = f.original_name || f.name;
   document.getElementById('preview-meta').textContent  =
@@ -1334,6 +1343,8 @@ function previewFile(fileId) {
   }
 
   document.getElementById('preview-content').innerHTML = content;
+  const editBtn = document.getElementById('preview-edit-btn');
+  if (editBtn) editBtn.style.display = State.isAdmin ? '' : 'none';
   openModal('preview-modal');
 }
 
@@ -1348,6 +1359,96 @@ const urlTypeIcon = ext => ({
   vimeo:   svgWrap('<path d="M21.7 8.3c-.1 2.3-1.7 5.4-4.8 9.3C13.7 22 11 24 8.8 24c-1.4 0-2.5-1.3-3.5-3.8L3.6 14c-.7-2.5-1.4-3.8-2.2-3.8-.2 0-.8.4-1.9 1.1L0 10.2c1.2-1 2.3-2.1 3.4-3 1.5-1.3 2.6-2 3.4-2 1.8-.2 2.9 1 3.3 3.6l1.4 9.2c.4 2.6 1 3.9 1.7 3.9.5 0 1.2-.8 2.2-2.3 1-1.5 1.5-2.7 1.6-3.5.1-1.3-.4-2-1.6-2-.5 0-1.1.1-1.7.4 1.1-3.7 3.3-5.5 6.4-5.3z"/>',32),
   canva:   svgWrap('<circle cx="12" cy="12" r="10"/><path d="M8 12.5c0-2.2 1.8-4 4-4s4 1.8 4 4-1.8 4-4 4"/>',32),
 }[ext] || videoIcon());
+
+// ── Edit file modal ───────────────────────────────────────────
+function injectEditFileModal() {
+  if (document.getElementById('edit-file-modal')) return;
+  document.body.insertAdjacentHTML('beforeend', `
+  <div class="modal-overlay" id="edit-file-modal">
+    <div class="modal" style="max-width:460px">
+      <div class="modal-header">
+        <div class="modal-header-left">
+          <div class="modal-header-icon">${fileIcon()}</div>
+          <div><h3>Edit File Details</h3><p>Update name, folder or event</p></div>
+        </div>
+        <button class="btn btn-ghost btn-icon" onclick="closeModal('edit-file-modal')">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="edit-file-id" />
+        <div class="field-wrap animated-field">
+          <input type="text" id="edit-file-name" placeholder=" " />
+          <label for="edit-file-name">Title / Name <span class="req">*</span></label>
+        </div>
+        <div class="field-wrap animated-field" id="edit-file-url-wrap" style="display:none">
+          <input type="url" id="edit-file-url" placeholder=" " />
+          <label for="edit-file-url">URL</label>
+        </div>
+        <div class="field-wrap field-wrap-select animated-field">
+          <select id="edit-file-folder"></select>
+          <label for="edit-file-folder">Folder</label>
+        </div>
+        <div class="field-wrap field-wrap-select animated-field">
+          <select id="edit-file-event"></select>
+          <label for="edit-file-event">Event</label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" onclick="closeModal('edit-file-modal')">Cancel</button>
+        <button class="btn btn-primary" onclick="saveFileEdit()">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+          Save Changes
+        </button>
+      </div>
+    </div>
+  </div>`);
+}
+
+function openEditFileModal(fileId) {
+  injectEditFileModal();
+  const f = State.files.find(x => x.id === fileId);
+  if (!f) return;
+  document.getElementById('edit-file-id').value   = fileId;
+  document.getElementById('edit-file-name').value = f.original_name || f.name || '';
+  const isUrl   = f.file_path?.startsWith('url:');
+  const urlWrap = document.getElementById('edit-file-url-wrap');
+  if (urlWrap) {
+    urlWrap.style.display = isUrl ? '' : 'none';
+    if (isUrl) document.getElementById('edit-file-url').value = f.file_url || '';
+  }
+  const folderOpts = `<option value="">No folder / Root</option>` +
+    State.folders.map(fd => `<option value="${fd.id}" ${f.folder_id===fd.id?'selected':''}>${esc(fd.path||fd.name)}</option>`).join('');
+  document.getElementById('edit-file-folder').innerHTML = folderOpts;
+  const eventOpts = `<option value="">No event</option>` +
+    State.events.map(e => `<option value="${e.id}" ${f.event_id===e.id?'selected':''}>${esc(e.name)}</option>`).join('');
+  document.getElementById('edit-file-event').innerHTML = eventOpts;
+  closePreview();
+  openModal('edit-file-modal');
+}
+
+async function saveFileEdit() {
+  const id   = document.getElementById('edit-file-id').value;
+  const name = document.getElementById('edit-file-name').value.trim();
+  if (!name) { toast('Name is required', 'error'); return; }
+  const f        = State.files.find(x => x.id === id);
+  const isUrl    = f?.file_path?.startsWith('url:');
+  const newUrl   = isUrl ? document.getElementById('edit-file-url').value.trim() : null;
+  const folderId = document.getElementById('edit-file-folder').value || null;
+  const eventId  = document.getElementById('edit-file-event').value  || null;
+  const update   = { name, original_name: name, folder_id: folderId, event_id: eventId };
+  if (isUrl && newUrl) {
+    const type       = detectUrlType(newUrl);
+    update.file_url  = newUrl;
+    update.file_path = `url:${type}:${newUrl}`;
+    update.extension = { youtube:'youtube', vimeo:'vimeo', canva:'canva' }[type] || newUrl.split('.').pop().split('?')[0];
+  }
+  const { error } = await db.from('files').update(update).eq('id', id);
+  if (error) { toast(error.message, 'error'); return; }
+  toast('Saved ✓', 'success');
+  closeModal('edit-file-modal');
+  await loadFiles(); renderView();
+}
 
 // ── SVG icons ─────────────────────────────────────────────────
 const svgWrap    = (path, size=18) => `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:${size}px;height:${size}px">${path}</svg>`;
