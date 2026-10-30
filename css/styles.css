@@ -1197,3 +1197,56 @@ kbd { background: var(--bg); border: 1px solid var(--border); border-radius: 4px
   padding: 4px 6px;
 }
 .fav-btn.active { color: #DC2626; }
+
+/* ── Upload modal tabs ── */
+.upload-tabs {
+  display: flex;
+  gap: 4px;
+  background: var(--bg);
+  border-radius: 10px;
+  padding: 4px;
+  margin: 12px 0 14px;
+}
+.upload-tab {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 9px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  transition: all 0.15s ease;
+  font-family: inherit;
+}
+.upload-tab.active {
+  background: var(--white);
+  color: var(--green-dark);
+  box-shadow: var(--shadow-sm);
+}
+.upload-tab:hover:not(.active) { color: var(--green-dark); background: var(--mint); }
+
+/* ── URL thumb badge on file cards ── */
+.url-thumb { position: relative; }
+.url-badge {
+  position: absolute;
+  bottom: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--green);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 2px 6px;
+  border-radius: 20px;
+}
+
+/* ── Preview modal fullscreen feel ── */
+.preview-modal-inner { padding: 0; overflow: hidden; }
+.preview-modal-inner .modal-header { padding: 16px 20px; border-radius: var(--radius-lg) var(--radius-lg) 0 0; }

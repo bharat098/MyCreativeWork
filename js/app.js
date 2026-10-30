@@ -455,23 +455,32 @@ function fileGrid(list) {
 }
 
 function fileCard(f) {
-  const isImg = f.file_type === 'image';
+  const isImg   = f.file_type === 'image';
+  const isUrl   = f.file_path?.startsWith('url:');
+  const extBadge = isUrl ? (f.extension||'link').toUpperCase() : (f.extension||'').toUpperCase();
+  const thumb = isImg && f.file_url
+    ? `<img src="${esc(f.file_url)}" alt="${esc(f.name)}" loading="lazy" />`
+    : isUrl
+      ? `<div class="file-icon-wrap url-thumb" style="color:var(--green)">${urlTypeIcon(f.extension)}
+           <span class="url-badge">${extBadge}</span></div>`
+      : `<div class="file-icon-wrap" style="color:var(--green)">${fileTypeIcon(f.file_type)}</div>`;
   return `
   <div class="file-card">
-    <div class="file-thumb">
-      ${isImg && f.file_url
-        ? `<img src="${esc(f.file_url)}" alt="${esc(f.name)}" loading="lazy" />`
-        : `<div class="file-icon-wrap" style="color:var(--green)">${fileTypeIcon(f.file_type)}</div>`}
+    <div class="file-thumb" onclick="previewFile('${f.id}')" style="cursor:pointer" title="Preview">
+      ${thumb}
     </div>
     <p class="file-name" title="${esc(f.original_name)}">${esc(f.name || f.original_name)}</p>
-    <p class="file-meta">${formatBytes(f.file_size)} · ${esc((f.extension||'').toUpperCase())}</p>
+    <p class="file-meta">${f.file_size ? formatBytes(f.file_size)+' · ' : ''}${extBadge}</p>
     ${State.isAdmin ? `
     <div class="file-card-actions">
-      ${f.file_url ? `<a href="${esc(f.file_url)}" target="_blank" class="btn btn-ghost btn-xs">Open</a>` : ''}
+      <button class="btn btn-ghost btn-xs" onclick="previewFile('${f.id}')">View</button>
       <button class="btn btn-ghost btn-xs" onclick="openMoveModal('${f.id}')">Move</button>
       <button class="btn btn-ghost btn-xs fav-btn${f.is_favorite?' active':''}" onclick="toggleFavorite('${f.id}',${f.is_favorite})">${f.is_favorite?'♥':'♡'}</button>
       <button class="btn btn-danger btn-xs" onclick="trashItem('${f.id}')">Del</button>
-    </div>` : ''}
+    </div>` : `
+    <div class="file-card-actions">
+      <button class="btn btn-ghost btn-xs" onclick="previewFile('${f.id}')">View</button>
+    </div>`}
   </div>`;
 }
 
@@ -724,6 +733,7 @@ async function saveFolder() {
     description: document.getElementById('f-desc').value.trim() || null,
     parent_id:   parentId,
     path:        `${parentPath}/${name}`,
+    event_id:    document.getElementById('f-event')?.value || null,
   };
   let err;
   if (id) ({ error: err } = await db.from('folders').update(data).eq('id', id));
@@ -744,8 +754,8 @@ function editFolder(id) {
   document.getElementById('f-name').value         = f.name || '';
   document.getElementById('f-desc').value         = f.description || '';
   setTimeout(() => {
-    const el = document.getElementById('f-parent');
-    if (el) el.value = f.parent_id || '';
+    const p = document.getElementById('f-parent'); if (p) p.value = f.parent_id || '';
+    const e = document.getElementById('f-event');  if (e) e.value = f.event_id  || '';
   }, 10);
 }
 
@@ -783,6 +793,12 @@ function editEvent(id) {
   document.getElementById('ev-desc').value  = ev.description || '';
   document.getElementById('ev-date').value  = ev.event_date || '';
   document.getElementById('ev-cover').value = ev.cover_image_url || '';
+  const prev = document.getElementById('ev-cover-preview');
+  const stat = document.getElementById('ev-cover-status');
+  if (ev.cover_image_url) {
+    if (prev) { prev.src = ev.cover_image_url; prev.style.display = 'block'; }
+    if (stat) stat.textContent = 'Image set ✓';
+  }
 }
 
 async function deleteEvent(id) {
@@ -874,60 +890,122 @@ function queueUpload(file) {
 async function uploadFile(file, itemId) {
   const ext   = file.name.split('.').pop().toLowerCase();
   const ftype = guessFileType(file.type, ext);
+  const path  = `${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
   const setStatus = (msg, cls='') => {
     const el = document.getElementById(`${itemId}-status`);
     if (el) { el.textContent = msg; el.className = `upload-status${cls?' '+cls:''}`; }
   };
   const setBar = pct => { const el = document.getElementById(`${itemId}-bar`); if (el) el.style.width = pct+'%'; };
 
-  // Upload to Cloudinary via unsigned preset (no size limit on free 25GB plan)
-  const formData = new FormData();
-  formData.append('file', file);
-  formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
-  formData.append('folder', 'mycreativework');
-
-  let fileUrl, filePath;
-  try {
-    await new Promise((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      xhr.upload.onprogress = e => {
-        if (e.lengthComputable) setBar(Math.round(e.loaded / e.total * 92));
-      };
-      xhr.onload = () => {
-        if (xhr.status === 200) {
-          const r = JSON.parse(xhr.responseText);
-          fileUrl  = r.secure_url;
-          filePath = r.public_id;
-          setBar(100);
-          resolve();
-        } else {
-          let msg = 'Upload failed';
-          try { msg = JSON.parse(xhr.responseText).error?.message || msg; } catch(e) {}
-          console.error('Cloudinary error', xhr.status, xhr.responseText);
-          reject(new Error(msg));
-        }
-      };
-      xhr.onerror = () => reject(new Error('Network error'));
-      xhr.open('POST', `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/auto/upload`);
-      xhr.send(formData);
-    });
-  } catch(err) {
-    setStatus('Failed', 'error');
-    toast('Upload failed: ' + err.message, 'error');
-    return;
-  }
-
-  setStatus('Saving…');
-  const folderId = document.getElementById('upload-folder').value || null;
-  const { error } = await db.from('files').insert({
+  const { error } = await db.storage.from('media').upload(path, file, { upsert: false });
+  if (error) { setStatus('Failed', 'error'); toast('Upload failed: ' + error.message, 'error'); return; }
+  setBar(100); setStatus('Saving…');
+  const { data: { publicUrl: fileUrl } } = db.storage.from('media').getPublicUrl(path);
+  const folderId = document.getElementById('upload-folder')?.value || null;
+  const eventId  = document.getElementById('upload-event')?.value  || null;
+  const { error: dbErr } = await db.from('files').insert({
     name: file.name, original_name: file.name,
-    file_path: filePath, file_url: fileUrl,
+    file_path: path, file_url: fileUrl,
     file_size: file.size, mime_type: file.type,
     file_type: ftype, extension: ext,
     folder_id: folderId,
+    event_id:  eventId,
   });
-  if (error) { setStatus('DB error', 'error'); toast(error.message, 'error'); return; }
+  if (dbErr) { setStatus('DB error', 'error'); toast(dbErr.message, 'error'); return; }
   await loadFiles(); setStatus('Done ✓', 'success');
+}
+
+// ── URL tab ───────────────────────────────────────────────────
+function detectUrlType(url) {
+  if (/youtube\.com\/watch|youtu\.be\//.test(url))      return 'youtube';
+  if (/vimeo\.com\/\d+/.test(url))                      return 'vimeo';
+  if (/canva\.com\/design\//.test(url))                 return 'canva';   // all canva design URLs
+  if (/\.(mp4|mov|webm|avi|mkv|m4v)(\?|$)/i.test(url)) return 'video';
+  if (/\.(jpg|jpeg|png|gif|webp|svg)(\?|$)/i.test(url)) return 'image';
+  return 'embed';
+}
+
+function getEmbedUrl(url, type) {
+  if (type === 'youtube') {
+    const id = url.match(/(?:v=|youtu\.be\/)([^&?\s]+)/)?.[1];
+    return id ? `https://www.youtube.com/embed/${id}?autoplay=1` : url;
+  }
+  if (type === 'vimeo') {
+    const id = url.match(/vimeo\.com\/(\d+)/)?.[1];
+    return id ? `https://player.vimeo.com/video/${id}?autoplay=1` : url;
+  }
+  if (type === 'canva') {
+    // Strip query string, replace /edit with /watch, then add ?embed
+    const base = url.split('?')[0].replace(/\/edit$/, '/watch');
+    return base + '?embed';
+  }
+  return url;
+}
+
+function switchUploadTab(tab) {
+  document.getElementById('upload-tab-file').style.display = tab === 'file' ? '' : 'none';
+  document.getElementById('upload-tab-url').style.display  = tab === 'url'  ? '' : 'none';
+  document.getElementById('url-add-btn').style.display     = tab === 'url'  ? '' : 'none';
+  document.getElementById('tab-btn-file').classList.toggle('active', tab === 'file');
+  document.getElementById('tab-btn-url').classList.toggle('active',  tab === 'url');
+}
+
+function previewUrlInput(url) {
+  const wrap  = document.getElementById('url-preview-wrap');
+  const tWrap = document.getElementById('url-title-wrap');
+  const btn   = document.getElementById('url-add-btn');
+  if (!url || !url.startsWith('http')) {
+    wrap.style.display = 'none'; tWrap.style.display = 'none'; btn.style.display = 'none';
+    return;
+  }
+  const type     = detectUrlType(url);
+  const embedUrl = getEmbedUrl(url, type);
+  let html;
+  if (type === 'video') {
+    html = `<video src="${esc(url)}" controls style="width:100%;max-height:200px;display:block"></video>`;
+  } else if (type === 'image') {
+    html = `<img src="${esc(url)}" style="width:100%;max-height:200px;object-fit:contain;display:block" />`;
+  } else if (type === 'canva') {
+    html = `<div style="display:flex;align-items:center;gap:14px;padding:16px 18px;background:#7D2AE820;border-radius:12px">
+      <svg viewBox="0 0 40 40" style="width:36px;height:36px;flex-shrink:0" fill="none"><circle cx="20" cy="20" r="20" fill="#7D2AE8"/><text x="20" y="27" text-anchor="middle" font-size="20" font-family="sans-serif" fill="#fff" font-weight="bold">C</text></svg>
+      <div>
+        <p style="font-size:13px;font-weight:600;color:var(--green-dark)">Canva Design detected ✓</p>
+        <p style="font-size:11px;color:var(--text-secondary)">Will open in Canva when previewed</p>
+      </div>
+    </div>`;
+  } else if (type === 'youtube' || type === 'vimeo') {
+    html = `<iframe src="${esc(embedUrl)}" style="width:100%;height:200px;border:none;display:block;border-radius:10px" allowfullscreen allow="autoplay"></iframe>`;
+  } else {
+    html = `<div style="padding:14px 18px;background:var(--bg);border-radius:10px;font-size:12px;color:var(--text-secondary)">Link saved — preview opens on click</div>`;
+  }
+  wrap.innerHTML = html;
+  wrap.style.display = '';
+  tWrap.style.display = '';
+  btn.style.display = '';
+}
+
+async function saveFileByUrl() {
+  const url   = document.getElementById('url-input').value.trim();
+  const title = document.getElementById('url-title').value.trim();
+  if (!url || !url.startsWith('http')) { toast('Enter a valid URL', 'error'); return; }
+  const type    = detectUrlType(url);
+  const ftype   = (type === 'image') ? 'image' : 'video';
+  const ext     = { youtube:'youtube', vimeo:'vimeo', canva:'canva', embed:'link', video: url.split('.').pop().split('?')[0].toLowerCase(), image: url.split('.').pop().split('?')[0].toLowerCase() }[type] || 'link';
+  const name    = title || (type === 'youtube' ? 'YouTube Video' : type === 'vimeo' ? 'Vimeo Video' : type === 'canva' ? 'Canva Design' : url.split('/').pop().split('?')[0] || 'Untitled');
+  const folderId = document.getElementById('upload-folder')?.value || null;
+  const eventId  = document.getElementById('upload-event')?.value  || null;
+  const { error } = await db.from('files').insert({
+    name, original_name: name,
+    file_path: `url:${type}:${url}`,
+    file_url: url,
+    file_size: 0, mime_type: 'text/html',
+    file_type: ftype, extension: ext,
+    folder_id: folderId, event_id: eventId,
+  });
+  if (error) { toast(error.message, 'error'); return; }
+  toast('Added to vault ✓', 'success');
+  closeModal('upload-modal');
+  await loadFiles(); renderView();
 }
 
 function guessFileType(mime, ext) {
@@ -941,10 +1019,15 @@ function guessFileType(mime, ext) {
 
 // ── Selects ───────────────────────────────────────────────────
 function populateFolderSelects() {
-  const opts = `<option value="">No folder / Root</option>` +
+  const folderOpts = `<option value="">No folder / Root</option>` +
     State.folders.map(f => `<option value="${f.id}">${esc(f.path || f.name)}</option>`).join('');
   ['f-parent','upload-folder'].forEach(id => {
-    const el = document.getElementById(id); if (el) el.innerHTML = opts;
+    const el = document.getElementById(id); if (el) el.innerHTML = folderOpts;
+  });
+  const eventOpts = `<option value="">No event</option>` +
+    State.events.map(e => `<option value="${e.id}">${esc(e.name)}${e.event_date ? ' ('+new Date(e.event_date).getFullYear()+')' : ''}</option>`).join('');
+  ['upload-event','f-event'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.innerHTML = eventOpts;
   });
 }
 
@@ -983,6 +1066,10 @@ function injectFolderModal() {
           <select id="f-parent"><option value="">Root (top level)</option></select>
           <label for="f-parent">Parent Folder</label>
         </div>
+        <div class="field-wrap field-wrap-select animated-field">
+          <select id="f-event"><option value="">No event</option></select>
+          <label for="f-event">Link to Event (optional)</label>
+        </div>
       </div>
       <div class="modal-footer">
         <button class="btn btn-ghost" onclick="closeModal('folder-modal')">Cancel</button>
@@ -1020,15 +1107,21 @@ function injectEventModal() {
           <textarea id="ev-desc" placeholder=" "></textarea>
           <label for="ev-desc">Description</label>
         </div>
-        <div class="form-row">
-          <div class="field-wrap animated-field">
-            <input type="date" id="ev-date" placeholder=" " />
-            <label for="ev-date">Event Date</label>
+        <div class="field-wrap animated-field">
+          <input type="date" id="ev-date" placeholder=" " />
+          <label for="ev-date">Event Date</label>
+        </div>
+        <div class="animated-field" style="margin-top:6px">
+          <input type="hidden" id="ev-cover" />
+          <input type="file" id="ev-cover-file" accept="image/*" style="display:none" onchange="uploadEventCover(this)" />
+          <div style="display:flex;gap:10px;align-items:center;padding:10px 14px;background:var(--bg);border-radius:12px;border:1px solid var(--border)">
+            <button type="button" class="btn btn-secondary btn-sm" style="flex-shrink:0" onclick="document.getElementById('ev-cover-file').click()">
+              ${svgWrap('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17,8 12,3 7,8"/><line x1="12" y1="3" x2="12" y2="15"/>',14)}
+              Upload Banner
+            </button>
+            <span id="ev-cover-status" style="font-size:11px;color:var(--text-secondary);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">No image selected</span>
           </div>
-          <div class="field-wrap animated-field">
-            <input type="url" id="ev-cover" placeholder=" " />
-            <label for="ev-cover">Cover Image URL</label>
-          </div>
+          <img id="ev-cover-preview" src="" alt="Cover" style="display:none;width:100%;max-height:130px;object-fit:cover;border-radius:10px;margin-top:8px" />
         </div>
       </div>
       <div class="modal-footer">
@@ -1039,6 +1132,27 @@ function injectEventModal() {
       </div>
     </div>
   </div>`);
+}
+
+async function uploadEventCover(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const stat = document.getElementById('ev-cover-status');
+  const prev = document.getElementById('ev-cover-preview');
+  if (stat) stat.textContent = 'Uploading…';
+  const ext  = file.name.split('.').pop().toLowerCase();
+  const path = `events/${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
+  const { error } = await db.storage.from('media').upload(path, file, { upsert: false });
+  if (error) {
+    if (stat) stat.textContent = 'Upload failed';
+    toast('Cover upload failed: ' + error.message, 'error');
+    return;
+  }
+  const { data: { publicUrl } } = db.storage.from('media').getPublicUrl(path);
+  document.getElementById('ev-cover').value = publicUrl;
+  if (stat) stat.textContent = file.name;
+  if (prev) { prev.src = publicUrl; prev.style.display = 'block'; }
+  toast('Cover uploaded ✓', 'success');
 }
 
 // ── Modals ────────────────────────────────────────────────────
@@ -1052,6 +1166,9 @@ function openModal(id) {
     document.getElementById('f-name').value = '';
     document.getElementById('f-desc').value = '';
     populateFolderSelects();
+    setTimeout(() => {
+      const fe = document.getElementById('f-event'); if (fe) fe.value = '';
+    }, 10);
     // Re-trigger stagger animations
     modal.querySelectorAll('.animated-field').forEach(el => {
       el.style.animation = 'none'; void el.offsetWidth; el.style.animation = '';
@@ -1065,12 +1182,24 @@ function openModal(id) {
       const el = document.getElementById('upload-folder');
       if (el) el.value = State.folderStack[State.folderStack.length - 1].id;
     }
+    // reset URL tab
+    switchUploadTab('file');
+    const ui = document.getElementById('url-input'); if (ui) ui.value = '';
+    const ut = document.getElementById('url-title'); if (ut) ut.value = '';
+    const uw = document.getElementById('url-preview-wrap'); if (uw) { uw.innerHTML = ''; uw.style.display = 'none'; }
+    const tw = document.getElementById('url-title-wrap'); if (tw) tw.style.display = 'none';
   }
   if (id === 'event-modal') {
     document.getElementById('event-modal-title').textContent = 'New Event';
     document.getElementById('event-save-label').textContent  = 'Create Event';
     document.getElementById('event-edit-id').value = '';
     ['ev-name','ev-desc','ev-date','ev-cover'].forEach(f => { const el = document.getElementById(f); if(el) el.value=''; });
+    const prev = document.getElementById('ev-cover-preview');
+    const stat = document.getElementById('ev-cover-status');
+    const fi   = document.getElementById('ev-cover-file');
+    if (prev) { prev.src = ''; prev.style.display = 'none'; }
+    if (stat) stat.textContent = 'No image selected';
+    if (fi)   fi.value = '';
     modal.querySelectorAll('.animated-field').forEach(el => {
       el.style.animation = 'none'; void el.offsetWidth; el.style.animation = '';
     });
@@ -1137,6 +1266,88 @@ function timeAgo(iso) {
   if (d < 86400) return Math.floor(d/3600)+'h ago';
   return Math.floor(d/86400)+'d ago';
 }
+
+// ── Preview modal ─────────────────────────────────────────────
+function injectPreviewModal() {
+  if (document.getElementById('preview-modal')) return;
+  document.body.insertAdjacentHTML('beforeend', `
+  <div class="modal-overlay" id="preview-modal">
+    <div class="modal preview-modal-inner" style="max-width:860px;width:95vw">
+      <div class="modal-header">
+        <div class="modal-header-left">
+          <div class="modal-header-icon">${videoIcon()}</div>
+          <div>
+            <h3 id="preview-title" style="max-width:600px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Preview</h3>
+            <p id="preview-meta"></p>
+          </div>
+        </div>
+        <button class="btn btn-ghost btn-icon" onclick="closePreview()">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div id="preview-content" style="background:#111;border-radius:0 0 var(--radius-lg) var(--radius-lg);min-height:300px;display:flex;align-items:center;justify-content:center;overflow:hidden"></div>
+    </div>
+  </div>`);
+}
+
+function previewFile(fileId) {
+  const f = State.files.find(x => x.id === fileId);
+  if (!f) return;
+  injectPreviewModal();
+  document.getElementById('preview-title').textContent = f.original_name || f.name;
+  document.getElementById('preview-meta').textContent  =
+    (f.file_size ? formatBytes(f.file_size) + ' · ' : '') +
+    (f.extension || f.file_type || '').toUpperCase();
+
+  const url    = f.file_url || '';
+  const isUrl  = f.file_path?.startsWith('url:');
+  const type   = isUrl ? detectUrlType(url) : f.file_type;
+  const embed  = isUrl ? getEmbedUrl(url, type) : url;
+  let content;
+
+  if (type === 'image') {
+    content = `<img src="${esc(url)}" style="max-width:100%;max-height:75vh;object-fit:contain;border-radius:0 0 var(--radius-lg) var(--radius-lg)" />`;
+  } else if (type === 'video') {
+    content = `<video src="${esc(url)}" controls autoplay style="width:100%;max-height:75vh;display:block;border-radius:0 0 var(--radius-lg) var(--radius-lg)"></video>`;
+  } else if (type === 'canva') {
+    content = `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;padding:60px 32px;color:#fff;min-height:320px">
+      <svg viewBox="0 0 80 80" style="width:64px;height:64px" fill="none"><circle cx="40" cy="40" r="40" fill="#7D2AE8"/><text x="40" y="52" text-anchor="middle" font-size="36" font-family="sans-serif" fill="#fff" font-weight="bold">C</text></svg>
+      <div style="text-align:center">
+        <p style="font-size:18px;font-weight:700;margin-bottom:8px">${esc(f.original_name || f.name)}</p>
+        <p style="font-size:13px;opacity:.6;margin-bottom:24px">Canva designs open natively in Canva for the best experience</p>
+        <a href="${esc(url)}" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:8px;padding:12px 28px;background:#7D2AE8;color:#fff;border-radius:12px;font-size:14px;font-weight:600;text-decoration:none">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+          Open in Canva
+        </a>
+      </div>
+    </div>`;
+  } else if (type === 'youtube' || type === 'vimeo') {
+    content = `<iframe src="${esc(embed)}" style="width:100%;height:480px;border:none;border-radius:0 0 var(--radius-lg) var(--radius-lg)" allowfullscreen allow="autoplay; fullscreen"></iframe>`;
+  } else if (url) {
+    content = `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:60px 32px;color:#aaa;min-height:320px">
+      ${fileTypeIcon(f.file_type)}
+      <p style="font-size:13px">No inline preview</p>
+      <a href="${esc(url)}" target="_blank" rel="noopener" class="btn btn-primary">Open file</a>
+    </div>`;
+  } else {
+    content = `<div style="color:#aaa;padding:48px;text-align:center">${fileTypeIcon(f.file_type)}<p style="margin-top:12px;font-size:13px">No preview available</p></div>`;
+  }
+
+  document.getElementById('preview-content').innerHTML = content;
+  openModal('preview-modal');
+}
+
+function closePreview() {
+  const c = document.getElementById('preview-content');
+  if (c) c.innerHTML = ''; // stops video/audio playback
+  closeModal('preview-modal');
+}
+
+const urlTypeIcon = ext => ({
+  youtube: svgWrap('<path d="M22.54 6.42a2.78 2.78 0 0 0-1.95-1.96C18.88 4 12 4 12 4s-6.88 0-8.59.46A2.78 2.78 0 0 0 1.46 6.42 29 29 0 0 0 1 12a29 29 0 0 0 .46 5.58 2.78 2.78 0 0 0 1.95 1.96C5.12 20 12 20 12 20s6.88 0 8.59-.46a2.78 2.78 0 0 0 1.95-1.96A29 29 0 0 0 23 12a29 29 0 0 0-.46-5.58z"/><polygon points="9.75,15.02 15.5,12 9.75,8.98 9.75,15.02"/>',32),
+  vimeo:   svgWrap('<path d="M21.7 8.3c-.1 2.3-1.7 5.4-4.8 9.3C13.7 22 11 24 8.8 24c-1.4 0-2.5-1.3-3.5-3.8L3.6 14c-.7-2.5-1.4-3.8-2.2-3.8-.2 0-.8.4-1.9 1.1L0 10.2c1.2-1 2.3-2.1 3.4-3 1.5-1.3 2.6-2 3.4-2 1.8-.2 2.9 1 3.3 3.6l1.4 9.2c.4 2.6 1 3.9 1.7 3.9.5 0 1.2-.8 2.2-2.3 1-1.5 1.5-2.7 1.6-3.5.1-1.3-.4-2-1.6-2-.5 0-1.1.1-1.7.4 1.1-3.7 3.3-5.5 6.4-5.3z"/>',32),
+  canva:   svgWrap('<circle cx="12" cy="12" r="10"/><path d="M8 12.5c0-2.2 1.8-4 4-4s4 1.8 4 4-1.8 4-4 4"/>',32),
+}[ext] || videoIcon());
 
 // ── SVG icons ─────────────────────────────────────────────────
 const svgWrap    = (path, size=18) => `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:${size}px;height:${size}px">${path}</svg>`;

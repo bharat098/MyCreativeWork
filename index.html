@@ -201,8 +201,8 @@
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17,8 12,3 7,8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
         </div>
         <div>
-          <h3>Upload Files</h3>
-          <p>Videos, images, design files & more</p>
+          <h3>Add to Vault</h3>
+          <p>Upload a file or add by URL</p>
         </div>
       </div>
       <button class="btn btn-ghost btn-icon" onclick="closeModal('upload-modal')">
@@ -210,20 +210,57 @@
       </button>
     </div>
     <div class="modal-body">
-      <div class="form-group" style="margin-bottom:14px">
-        <label>Link to Folder</label>
-        <select id="upload-folder"><option value="">None</option></select>
+      <!-- Folder + Event -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="field-wrap field-wrap-select animated-field">
+          <select id="upload-folder"><option value="">No folder / Root</option></select>
+          <label for="upload-folder">Folder</label>
+        </div>
+        <div class="field-wrap field-wrap-select animated-field">
+          <select id="upload-event"><option value="">No event</option></select>
+          <label for="upload-event">Event</label>
+        </div>
       </div>
-      <div class="drop-zone" id="drop-zone" onclick="document.getElementById('file-input').click()" ondragover="event.preventDefault();this.classList.add('drag-over')" ondragleave="this.classList.remove('drag-over')" ondrop="handleDrop(event)">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17,8 12,3 7,8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-        <h4>Drag & drop files here</h4>
-        <p>or click to browse · MP4, MOV, PNG, JPG, PDF, ZIP, PSD, AEP…</p>
+      <!-- Tab switcher -->
+      <div class="upload-tabs">
+        <button class="upload-tab active" id="tab-btn-file" onclick="switchUploadTab('file')">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17,8 12,3 7,8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          Upload File
+        </button>
+        <button class="upload-tab" id="tab-btn-url" onclick="switchUploadTab('url')">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+          Add by URL
+        </button>
       </div>
-      <input type="file" id="file-input" multiple accept="video/*,image/*,.pdf,.zip,.psd,.ai,.aep,.prproj,.sketch,.fig" style="display:none" onchange="handleFileSelect(this.files)" />
-      <div class="upload-list" id="upload-list"></div>
+      <!-- File upload tab -->
+      <div id="upload-tab-file">
+        <div class="drop-zone" id="drop-zone" onclick="document.getElementById('file-input').click()" ondragover="event.preventDefault();this.classList.add('drag-over')" ondragleave="this.classList.remove('drag-over')" ondrop="handleDrop(event)">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17,8 12,3 7,8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          <h4>Drag & drop files here</h4>
+          <p>or click to browse · PNG, JPG, PDF, ZIP, PSD, AEP…</p>
+        </div>
+        <input type="file" id="file-input" multiple accept="image/*,.pdf,.zip,.psd,.ai,.aep,.prproj,.sketch,.fig" style="display:none" onchange="handleFileSelect(this.files)" />
+        <div class="upload-list" id="upload-list"></div>
+      </div>
+      <!-- URL tab -->
+      <div id="upload-tab-url" style="display:none">
+        <div class="field-wrap animated-field" style="margin-top:4px">
+          <input type="url" id="url-input" placeholder=" " autocomplete="off" oninput="previewUrlInput(this.value)" />
+          <label for="url-input">Paste URL — Canva, YouTube, Vimeo, MP4…</label>
+        </div>
+        <div id="url-preview-wrap" style="display:none;border-radius:12px;overflow:hidden;background:#111;margin-bottom:12px"></div>
+        <div class="field-wrap animated-field" id="url-title-wrap" style="display:none">
+          <input type="text" id="url-title" placeholder=" " />
+          <label for="url-title">Title</label>
+        </div>
+      </div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeModal('upload-modal')">Close</button>
+      <button class="btn btn-primary" id="url-add-btn" style="display:none" onclick="saveFileByUrl()">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+        Add to Vault
+      </button>
     </div>
   </div>
 </div>
