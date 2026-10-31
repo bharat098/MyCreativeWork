@@ -18,8 +18,20 @@ const State = {
   events: [],
   search: '',
   pendingConfirm: null,
-  folderStack: [], // [{id, name}] — breadcrumb trail for folder drill-down
+  folderStack: [],
+  selectedEvent: null,
+  sortBy: 'date_desc',
+  profile: null,
+  profileAvatarUrl: null,
+  filterYear: '',
+  filterMonth: '',
+  filterType: '',
 };
+
+// active settings tab — persists during the session
+let _settingsTab = 'personal';
+// pending photo file before save
+let _pendingAvatarFile = null;
 
 // ── Bootstrap ────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', async () => {
@@ -32,7 +44,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   window.addEventListener('hashchange', () => {
     const raw = location.hash.slice(1) || 'dashboard';
-    if (raw !== State.view) State.folderStack = [];
+    if (raw !== State.view) { State.folderStack = []; State.selectedEvent = null; }
     State.view = raw;
     State.search = '';
     document.getElementById('search-input').value = '';
@@ -61,14 +73,196 @@ function setAdmin(user) {
   document.getElementById('admin-badge').style.display = 'flex';
   document.getElementById('admin-actions').style.display = 'flex';
   document.getElementById('sidebar-mode-label').textContent = 'Admin Mode';
+  const av = document.getElementById('header-avatar');
+  if (av) av.style.display = 'flex';
   document.body.classList.add('is-admin');
+  loadProfile();
 }
 function clearAdmin() {
   State.user = null; State.isAdmin = false;
+  State.profile = null; State.profileAvatarUrl = null;
   document.getElementById('admin-badge').style.display = 'none';
   document.getElementById('admin-actions').style.display = 'none';
   document.getElementById('sidebar-mode-label').textContent = 'Creative Workspace';
+  const av = document.getElementById('header-avatar');
+  if (av) av.style.display = 'none';
   document.body.classList.remove('is-admin');
+  refreshHeaderAvatar(null);
+}
+
+// ── Profile helpers ───────────────────────────────────────────
+async function loadProfile() {
+  if (!State.user) return;
+  const uid = State.user.id;
+  const { data, error } = await db.from('profiles').select('*').eq('id', uid).maybeSingle();
+  if (error) { console.warn('loadProfile:', error.message); return; }
+  if (!data) {
+    const name = State.user.user_metadata?.full_name || '';
+    await db.from('profiles').insert({ id: uid, full_name: name });
+    State.profile = { id: uid, full_name: name, avatar_path: null };
+  } else {
+    State.profile = data;
+  }
+  if (State.profile.avatar_path) {
+    const { data: u } = await db.storage.from('avatars').createSignedUrl(State.profile.avatar_path, 3600);
+    State.profileAvatarUrl = u?.signedUrl || null;
+  } else {
+    State.profileAvatarUrl = null;
+  }
+  refreshHeaderAvatar(State.profileAvatarUrl);
+  if (State.view === 'settings') renderView();
+}
+
+function refreshHeaderAvatar(url) {
+  const src = url || 'assets/myphoto.png';
+  document.querySelectorAll('.avatar-photo, .avatar-dropdown-photo').forEach(img => img.src = src);
+  const ps = document.getElementById('ps-avatar-img');
+  if (ps) ps.src = src;
+}
+
+function refreshHeaderName(name) {
+  document.querySelectorAll('.avatar-name').forEach(el => el.textContent = name);
+  document.querySelectorAll('.avatar-dropdown-name').forEach(el => el.textContent = name);
+  const el = document.getElementById('ps-profile-name');
+  if (el) el.textContent = name;
+}
+
+function psMsg(type, msg) {
+  const el = document.getElementById('ps-msg');
+  if (!el) { toast(msg, type === 'error' ? 'error' : type === 'success' ? 'success' : 'info'); return; }
+  el.className = 'ps-msg ps-msg-' + type;
+  el.textContent = msg;
+  el.style.display = 'flex';
+  if (type !== 'error') setTimeout(() => { if (el) el.style.display = 'none'; }, 5000);
+}
+
+function switchSettingsTab(tab) {
+  _settingsTab = tab;
+  // swap visible panel without full re-render
+  ['personal','password','photo'].forEach(t => {
+    const panel = document.getElementById('ps-panel-' + t);
+    const btn   = document.getElementById('ps-tab-' + t);
+    if (panel) panel.style.display = t === tab ? 'block' : 'none';
+    if (btn)   btn.className = 'ps-tab' + (t === tab ? ' active' : '');
+  });
+  const msgEl = document.getElementById('ps-msg');
+  if (msgEl) msgEl.style.display = 'none';
+}
+
+async function savePersonalInfo() {
+  const nameEl  = document.getElementById('ps-name');
+  const emailEl = document.getElementById('ps-email');
+  const btn     = document.getElementById('ps-info-btn');
+  const name  = nameEl?.value.trim();
+  const email = emailEl?.value.trim();
+  if (!name)  { psMsg('error', 'Full name is required'); return; }
+  if (!email || !email.includes('@')) { psMsg('error', 'Valid email address required'); return; }
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    const { error: pe } = await db.from('profiles')
+      .update({ full_name: name, updated_at: new Date().toISOString() })
+      .eq('id', State.user.id);
+    if (pe) throw pe;
+    State.profile = { ...State.profile, full_name: name };
+    refreshHeaderName(name);
+    if (email !== State.user.email) {
+      const { error: ae } = await db.auth.updateUser({ email });
+      if (ae) throw ae;
+      psMsg('info', `Name saved. Confirm your new email at ${email} to complete the change.`);
+    } else {
+      psMsg('success', 'Changes saved successfully ✓');
+    }
+  } catch(e) { psMsg('error', e.message); }
+  finally { btn.disabled = false; btn.textContent = 'Save Changes'; }
+}
+
+async function changePassword() {
+  const cur  = document.getElementById('ps-cur-pass')?.value;
+  const nw   = document.getElementById('ps-new-pass')?.value;
+  const conf = document.getElementById('ps-conf-pass')?.value;
+  const btn  = document.getElementById('ps-pass-btn');
+  if (!cur || !nw || !conf) { psMsg('error', 'All fields are required'); return; }
+  if (nw !== conf)          { psMsg('error', 'New passwords do not match'); return; }
+  if (nw.length < 6)        { psMsg('error', 'Password must be at least 6 characters'); return; }
+  btn.disabled = true; btn.textContent = 'Verifying…';
+  try {
+    const { error: re } = await db.auth.signInWithPassword({ email: State.user.email, password: cur });
+    if (re) throw new Error('Current password is incorrect');
+    btn.textContent = 'Updating…';
+    const { error: ue } = await db.auth.updateUser({ password: nw });
+    if (ue) throw ue;
+    psMsg('success', 'Password updated successfully ✓');
+    document.getElementById('ps-cur-pass').value  = '';
+    document.getElementById('ps-new-pass').value  = '';
+    document.getElementById('ps-conf-pass').value = '';
+  } catch(e) { psMsg('error', e.message); }
+  finally { btn.disabled = false; btn.textContent = 'Update Password'; }
+}
+
+function togglePassVis(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.type = el.type === 'password' ? 'text' : 'password';
+}
+
+function handleAvatarSelect(input) {
+  const file = input?.files[0];
+  if (!file) return;
+  const allowed = ['image/jpeg','image/png','image/webp'];
+  if (!allowed.includes(file.type)) { psMsg('error', 'Only JPG, PNG or WebP allowed'); return; }
+  if (file.size > 5 * 1024 * 1024) { psMsg('error', 'File must be under 5 MB'); return; }
+  _pendingAvatarFile = file;
+  const reader = new FileReader();
+  reader.onload = e => {
+    const prev = document.getElementById('ps-photo-preview');
+    if (prev) prev.src = e.target.result;
+    const saveBtn = document.getElementById('ps-photo-save-btn');
+    if (saveBtn) saveBtn.style.display = 'inline-flex';
+    psMsg('info', 'Photo selected — click Save Photo to upload');
+  };
+  reader.readAsDataURL(file);
+}
+
+async function saveProfilePhoto() {
+  if (!_pendingAvatarFile) { psMsg('error', 'No photo selected'); return; }
+  const btn = document.getElementById('ps-photo-save-btn');
+  btn.disabled = true; btn.textContent = 'Uploading…';
+  try {
+    const uid = State.user.id;
+    const ext = _pendingAvatarFile.type === 'image/png' ? 'png'
+              : _pendingAvatarFile.type === 'image/webp' ? 'webp' : 'jpg';
+    const path = `${uid}/avatar.${ext}`;
+    const { error: ue } = await db.storage.from('avatars')
+      .upload(path, _pendingAvatarFile, { upsert: true, contentType: _pendingAvatarFile.type });
+    if (ue) throw ue;
+    const { error: de } = await db.from('profiles')
+      .update({ avatar_path: path, updated_at: new Date().toISOString() })
+      .eq('id', uid);
+    if (de) throw de;
+    const { data: su } = await db.storage.from('avatars').createSignedUrl(path, 3600);
+    State.profile.avatar_path = path;
+    State.profileAvatarUrl = su?.signedUrl || null;
+    refreshHeaderAvatar(State.profileAvatarUrl);
+    _pendingAvatarFile = null;
+    psMsg('success', 'Profile photo updated ✓');
+    renderView();
+  } catch(e) { psMsg('error', e.message); }
+  finally { btn.disabled = false; btn.textContent = 'Save Photo'; }
+}
+
+async function removeProfilePhoto() {
+  if (!State.profile?.avatar_path) return;
+  if (!confirm('Remove your profile photo?')) return;
+  try {
+    await db.storage.from('avatars').remove([State.profile.avatar_path]);
+    await db.from('profiles').update({ avatar_path: null }).eq('id', State.user.id);
+    State.profile.avatar_path = null;
+    State.profileAvatarUrl = null;
+    _pendingAvatarFile = null;
+    refreshHeaderAvatar(null);
+    psMsg('success', 'Profile photo removed');
+    renderView();
+  } catch(e) { psMsg('error', e.message); }
 }
 async function adminLogin() {
   const email = document.getElementById('admin-email').value.trim();
@@ -107,16 +301,24 @@ async function loadEvents() {
 }
 
 // ── Router ────────────────────────────────────────────────────
-function navigate(view) { location.hash = view; closeMobileMenu(); }
+function navigate(view) { resetFilters(); location.hash = view; closeMobileMenu(); }
+function setFilter(key, val) { State[key] = val; renderView(); }
+function resetFilters() { State.filterYear = ''; State.filterMonth = ''; State.filterType = ''; }
 function updateNavActive() {
   document.querySelectorAll('.nav-item').forEach(b =>
     b.classList.toggle('active', b.dataset.view === State.view));
 }
 function setView(mode) {
   State.viewMode = mode;
-  document.getElementById('view-grid').classList.toggle('active', mode === 'grid');
-  document.getElementById('view-list').classList.toggle('active', mode === 'list');
   renderView();
+}
+function viewToggleControl() {
+  const svgGrid = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>`;
+  const svgList = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>`;
+  return `<div class="inline-view-toggle">
+    <button class="ivt-btn${State.viewMode==='grid'?' active':''}" onclick="setView('grid')" title="Grid view">${svgGrid}</button>
+    <button class="ivt-btn${State.viewMode==='list'?' active':''}" onclick="setView('list')" title="List view">${svgList}</button>
+  </div>`;
 }
 function handleSearch(val) { State.search = val.toLowerCase(); renderView(); }
 
@@ -125,7 +327,7 @@ const TOGGLE_VIEWS = new Set(['files','videos','images','events','favorites','re
 // ── Render dispatcher ─────────────────────────────────────────
 function renderView() {
   const c = document.getElementById('view-container');
-  c.className = 'fade-in'; void c.offsetWidth;
+  c.className = 'fade-in'; c.dataset.view = State.view; void c.offsetWidth;
   const views = {
     dashboard: renderDashboard, files: renderFiles,
     folders:   renderFolders,  videos: renderVideos,
@@ -134,103 +336,282 @@ function renderView() {
     archive:   renderArchive,  trash: renderTrash,
     settings:  renderSettings,
   };
+  if (window._clockInterval) { clearInterval(window._clockInterval); window._clockInterval = null; }
   c.innerHTML = (views[State.view] || renderDashboard)();
   const toggle = document.getElementById('view-toggle');
   if (toggle) toggle.style.display = TOGGLE_VIEWS.has(State.view) ? 'flex' : 'none';
+  // Start live clock if dashboard rendered
+  if (State.view === 'dashboard') {
+    window._clockInterval = setInterval(() => {
+      const el = document.getElementById('db-live-clock');
+      if (!el) { clearInterval(window._clockInterval); return; }
+      el.textContent = new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    }, 1000);
+  }
 }
 
 // ── Dashboard ─────────────────────────────────────────────────
 function renderDashboard() {
+  const isAdmin = State.isAdmin;
   const totalFiles   = State.files.length;
   const totalFolders = State.folders.length;
   const totalSize    = State.files.reduce((s, f) => s + (f.file_size || 0), 0);
-  const recentF      = [...State.files].slice(0, 8);
+  const storagePct   = Math.min(totalSize / 1073741824 * 100, 100).toFixed(2);
 
-  const typeMap = {};
-  State.files.forEach(f => { const t = f.file_type || 'other'; typeMap[t] = (typeMap[t] || 0) + 1; });
-  const typeEntries = Object.entries(typeMap).sort((a,b) => b[1]-a[1]);
-  const typeRows = typeEntries.map(([name, count]) => {
-    const pct = Math.round(count / Math.max(totalFiles, 1) * 100);
-    return `<div class="cat-row">
-      <span style="flex:0 0 130px">${name.charAt(0).toUpperCase()+name.slice(1)}</span>
-      <div class="cat-row-bar"><div class="cat-row-fill" style="width:${pct}%;background:var(--green)"></div></div>
-      <span style="width:24px;text-align:right;font-weight:600;font-size:12px">${count}</span>
+  // Files by type counts
+  const typeMap = { video: 0, image: 0, document: 0, audio: 0, other: 0 };
+  State.files.forEach(f => {
+    const t = f.file_type || 'other';
+    if (typeMap[t] !== undefined) typeMap[t]++;
+    else typeMap.other++;
+  });
+  const typeConfig = [
+    { key: 'video',    label: 'Video',     color: '#2563EB' },
+    { key: 'image',    label: 'Images',    color: '#EC4899' },
+    { key: 'document', label: 'Documents', color: '#10B981' },
+    { key: 'audio',    label: 'Audio',     color: '#F97316' },
+    { key: 'other',    label: 'Others',    color: '#7C3AED' },
+  ];
+
+  // Donut chart SVG
+  const RADIUS = 70, CX = 90, CY = 90, CIRC = 2 * Math.PI * RADIUS;
+  let offset = 0;
+  const donutSegments = typeConfig.map(tc => {
+    const count = typeMap[tc.key] || 0;
+    const pct = totalFiles > 0 ? count / totalFiles : 0;
+    const dash = pct * CIRC;
+    const gap  = CIRC - dash;
+    const seg  = count > 0
+      ? `<circle cx="${CX}" cy="${CY}" r="${RADIUS}" fill="none" stroke="${tc.color}" stroke-width="18"
+           stroke-dasharray="${dash} ${gap}"
+           stroke-dashoffset="${-offset}"
+           style="transform-origin:${CX}px ${CY}px;transform:rotate(-90deg)"/>`
+      : '';
+    offset += dash;
+    return seg;
+  }).join('');
+
+  const donutSvg = `
+    <svg width="180" height="180" viewBox="0 0 180 180">
+      ${totalFiles === 0
+        ? `<circle cx="${CX}" cy="${CY}" r="${RADIUS}" fill="none" stroke="#E5E7EB" stroke-width="18"/>`
+        : donutSegments}
+      <text x="${CX}" y="${CY - 8}" text-anchor="middle" font-size="22" font-weight="800" fill="#0F172A">${totalFiles}</text>
+      <text x="${CX}" y="${CY + 14}" text-anchor="middle" font-size="11" fill="#6B7280">Total Files</text>
+    </svg>`;
+
+  const typeLegend = typeConfig.map(tc => {
+    const count = typeMap[tc.key] || 0;
+    const pct   = totalFiles > 0 ? Math.round(count / totalFiles * 100) : 0;
+    return `<div class="db-type-row">
+      <span class="db-type-dot" style="background:${tc.color}"></span>
+      <span class="db-type-label">${tc.label}</span>
+      <span class="db-type-count">${count}</span>
+      <span class="db-type-pct">${pct}%</span>
     </div>`;
   }).join('');
 
-  return `
-    <div class="page-header">
-      <div>
-        <h1 class="page-title">Dashboard</h1>
-        <p class="page-subtitle">Your Motion Vault — overview</p>
+  // Recent files (last 5)
+  const recentF = [...State.files]
+    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+    .slice(0, 5);
+
+  const recentRows = recentF.map(f => {
+    const typeColors = { video: '#2563EB', image: '#EC4899', document: '#10B981', audio: '#F97316' };
+    const tc = typeColors[f.file_type] || '#7C3AED';
+    return `<div class="db-recent-row">
+      <div class="db-recent-icon" style="background:${tc}18;color:${tc}">${fileTypeIcon(f.file_type)}</div>
+      <div class="db-recent-info">
+        <p class="db-recent-name">${esc(f.original_name || f.name)}</p>
+        <p class="db-recent-meta">${formatBytes(f.file_size || 0)} · ${timeAgo(f.created_at)}</p>
       </div>
-      ${State.isAdmin
-        ? `<button class="btn btn-ghost btn-sm" onclick="adminLogout()">Sign out admin</button>`
-        : `<span style="font-size:11px;color:var(--text-secondary)">Press <kbd>Ctrl+Shift+A</kbd> for admin</span>`}
+      <button class="db-open-btn" onclick="previewFile('${f.id}')">Open</button>
+      <button class="db-dots-btn" title="More">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+      </button>
+    </div>`;
+  }).join('');
+
+  // Date/time + greeting
+  const now = new Date();
+  const h = now.getHours();
+  const greeting = h < 12 ? 'Good Morning' : h < 18 ? 'Good Afternoon' : 'Good Evening';
+  const welcomeText = isAdmin ? `Welcome back, Bharat! 👋` : `${greeting}! 👋`;
+  const dateStr = now.toLocaleDateString('en-US', { weekday:'long', year:'numeric', month:'long', day:'numeric' });
+  const timeStr = now.toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+
+
+  return `
+    <!-- Welcome Banner -->
+    <div class="db-welcome">
+      <div class="db-welcome-left">
+        <h1 class="db-welcome-title">${welcomeText}</h1>
+        <p class="db-welcome-sub">Manage your creative content, organize files and track your media assets.</p>
+      </div>
+      <div class="db-welcome-right">
+        <div class="db-welcome-icon">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:20px;height:20px;color:#4F46E5"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+        </div>
+        <div>
+          <p class="db-welcome-date">${dateStr}</p>
+          <p class="db-welcome-time" id="db-live-clock">${timeStr}</p>
+        </div>
+      </div>
     </div>
 
-    <div class="stats-grid stagger">
-      ${statCard('Files', totalFiles, fileIcon(), 'var(--green)')}
-      ${statCard('Folders', totalFolders, folderIcon(), 'var(--green-dark)')}
-      ${statCard('Events', State.events.length, calIcon(), '#22C55E')}
-      ${statCard('Storage', formatBytes(totalSize), storageIcon(), '#0D7A4A')}
+    <!-- Stat Cards -->
+    <div class="db-stats-grid">
+      <div class="db-stat-card db-stat-purple">
+        <div class="db-stat-content">
+          <div class="db-stat-icon" style="background:linear-gradient(135deg,#7C3AED,#A78BFA)">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" style="width:22px;height:22px"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z"/><polyline points="14,2 14,8 20,8"/></svg>
+          </div>
+          <div class="db-stat-vals">
+            <span class="db-stat-num">${totalFiles}</span>
+            <span class="db-stat-label">Files</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="db-stat-card db-stat-blue">
+        <div class="db-stat-content">
+          <div class="db-stat-icon" style="background:linear-gradient(135deg,#2563EB,#3B82F6)">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" style="width:22px;height:22px"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+          </div>
+          <div class="db-stat-vals">
+            <span class="db-stat-num">${totalFolders}</span>
+            <span class="db-stat-label">Folders</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="db-stat-card db-stat-green">
+        <div class="db-stat-content">
+          <div class="db-stat-icon" style="background:linear-gradient(135deg,#10B981,#34D399)">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" style="width:22px;height:22px"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+          </div>
+          <div class="db-stat-vals">
+            <span class="db-stat-num">${State.events.length}</span>
+            <span class="db-stat-label">Events</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="db-stat-card db-stat-orange">
+        <div class="db-stat-content">
+          <div class="db-stat-icon" style="background:linear-gradient(135deg,#F97316,#FB923C)">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" style="width:22px;height:22px"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+          </div>
+          <div class="db-stat-vals">
+            <span class="db-stat-num">${formatBytes(totalSize)}</span>
+            <span class="db-stat-label">Storage Used</span>
+          </div>
+        </div>
+      </div>
     </div>
 
-    ${State.isAdmin ? `
-    <div class="quick-actions stagger" style="margin-top:16px">
-      <button class="qa-btn" onclick="openModal('upload-modal')">
-        <div class="qa-icon">${svgWrap('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17,8 12,3 7,8"/><line x1="12" y1="3" x2="12" y2="15"/>',20)}</div>
-        <span>Upload File</span>
-      </button>
-      <button class="qa-btn" onclick="openNewFolderModal()">
-        <div class="qa-icon">${folderIcon()}</div>
-        <span>New Folder</span>
-      </button>
-      <button class="qa-btn" onclick="navigate('folders')">
-        <div class="qa-icon">${folderIcon()}</div>
-        <span>Browse Folders</span>
-      </button>
-      <button class="qa-btn" onclick="openModal('event-modal')">
-        <div class="qa-icon">${calIcon()}</div>
-        <span>New Event</span>
-      </button>
+    <!-- Quick Actions (admin only) -->
+    ${isAdmin ? `<div class="db-actions-grid">
+      <div class="db-action-card" style="background:linear-gradient(135deg,#4F46E5,#7C3AED)" onclick="openModalWithTheme('upload-modal','purple')">
+        <div class="db-action-icon">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:28px;height:28px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17,8 12,3 7,8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        </div>
+        <div class="db-action-text">
+          <p class="db-action-title">Upload File</p>
+          <p class="db-action-sub">Add files to your vault</p>
+        </div>
+        <div class="db-action-arrow">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="width:14px;height:14px"><polyline points="9,18 15,12 9,6"/></svg>
+        </div>
+      </div>
+
+      <div class="db-action-card" style="background:linear-gradient(135deg,#2563EB,#3B82F6)" onclick="openNewFolderModal()">
+        <div class="db-action-icon">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:28px;height:28px"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
+        </div>
+        <div class="db-action-text">
+          <p class="db-action-title">New Folder</p>
+          <p class="db-action-sub">Create a folder</p>
+        </div>
+        <div class="db-action-arrow">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="width:14px;height:14px"><polyline points="9,18 15,12 9,6"/></svg>
+        </div>
+      </div>
+
+      <div class="db-action-card" style="background:linear-gradient(135deg,#10B981,#059669)" onclick="navigate('folders')">
+        <div class="db-action-icon">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:28px;height:28px"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        </div>
+        <div class="db-action-text">
+          <p class="db-action-title">Browse Folders</p>
+          <p class="db-action-sub">Explore all folders</p>
+        </div>
+        <div class="db-action-arrow">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="width:14px;height:14px"><polyline points="9,18 15,12 9,6"/></svg>
+        </div>
+      </div>
+
+      <div class="db-action-card" style="background:linear-gradient(135deg,#F97316,#EA580C)" onclick="openModalWithTheme('event-modal','orange')">
+        <div class="db-action-icon">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:28px;height:28px"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="12" y1="14" x2="12" y2="18"/><line x1="10" y1="16" x2="14" y2="16"/></svg>
+        </div>
+        <div class="db-action-text">
+          <p class="db-action-title">New Event</p>
+          <p class="db-action-sub">Schedule an event</p>
+        </div>
+        <div class="db-action-arrow">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="width:14px;height:14px"><polyline points="9,18 15,12 9,6"/></svg>
+        </div>
+      </div>
     </div>` : ''}
 
-    <div class="storage-bar-wrap" style="margin-top:20px">
-      ${storageIcon()}
-      <div class="storage-info">
-        <p>Storage Used <span>${formatBytes(totalSize)}</span></p>
-        <div class="storage-track"><div class="storage-fill" style="width:${Math.min(totalSize/1073741824*100,100).toFixed(1)}%"></div></div>
+    <!-- Storage Usage -->
+    <div class="db-storage-card${!isAdmin ? ' db-nonadmin-hide-mobile' : ''}">
+      <div class="db-storage-icon">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#4F46E5" stroke-width="2" style="width:22px;height:22px"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
       </div>
+      <div class="db-storage-body">
+        <p class="db-storage-title">Storage Usage</p>
+        <p class="db-storage-sub">${formatBytes(totalSize)} used of unlimited storage</p>
+        <div class="db-storage-track">
+          <div class="db-storage-fill" style="width:${Math.max(parseFloat(storagePct), totalSize > 0 ? 0.5 : 0)}%"></div>
+        </div>
+      </div>
+      <div class="db-storage-pct">${storagePct}%</div>
     </div>
 
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:20px" class="responsive-grid">
-      <div class="card">
-        <div class="card-header">
-          <h3 class="card-title">Files by Type</h3>
-          <a onclick="navigate('files')" style="font-size:12px;color:var(--green);cursor:pointer">View all →</a>
+    <!-- Files by Type + Recent Files -->
+    <div class="db-bottom-grid${!isAdmin ? ' db-nonadmin-hide-mobile' : ''}">
+      <!-- Files by Type -->
+      <div class="db-card">
+        <div class="db-card-header">
+          <div style="display:flex;align-items:center;gap:8px">
+            <div style="width:30px;height:30px;background:#EEF2FF;border-radius:8px;display:flex;align-items:center;justify-content:center">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#4F46E5" stroke-width="2" style="width:16px;height:16px"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+            </div>
+            <h3 class="db-card-title">Files by Type</h3>
+          </div>
+          <a onclick="navigate('files')" class="db-view-all">View All →</a>
         </div>
-        <div class="card-body">
-          ${typeRows || '<p style="font-size:13px;color:var(--text-secondary)">No files yet</p>'}
+        <div class="db-type-body">
+          <div class="db-donut-wrap">${donutSvg}</div>
+          <div class="db-type-legend">${typeLegend}</div>
         </div>
       </div>
 
-      <div class="card">
-        <div class="card-header">
-          <h3 class="card-title">Recent Files</h3>
-          <a onclick="navigate('recent')" style="font-size:12px;color:var(--green);cursor:pointer">See all →</a>
+      <!-- Recent Files -->
+      <div class="db-card">
+        <div class="db-card-header">
+          <div style="display:flex;align-items:center;gap:8px">
+            <div style="width:30px;height:30px;background:#FFF0F8;border-radius:8px;display:flex;align-items:center;justify-content:center">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#EC4899" stroke-width="2" style="width:16px;height:16px"><circle cx="12" cy="12" r="10"/><polyline points="12,6 12,12 16,14"/></svg>
+            </div>
+            <h3 class="db-card-title">Recent Files</h3>
+          </div>
+          <a onclick="navigate('recent')" class="db-view-all">View All →</a>
         </div>
-        <div class="card-body">
-          ${recentF.length ? recentF.map(f => `
-            <div class="dash-proj-row">
-              <div style="width:28px;height:28px;border-radius:8px;background:var(--mint);display:flex;align-items:center;justify-content:center;flex-shrink:0;color:var(--green)">${fileTypeIcon(f.file_type)}</div>
-              <div class="dash-proj-info">
-                <p class="dash-proj-name">${esc(f.original_name || f.name)}</p>
-                <p class="dash-proj-meta">${formatBytes(f.file_size)} · ${timeAgo(f.created_at)}</p>
-              </div>
-              ${f.file_url ? `<a href="${esc(f.file_url)}" target="_blank" class="btn btn-ghost btn-xs" onclick="event.stopPropagation()">Open</a>` : ''}
-            </div>`).join('')
-          : '<p style="font-size:13px;color:var(--text-secondary)">No files yet</p>'}
+        <div class="db-recent-list">
+          ${recentRows || '<p style="font-size:13px;color:#6B7280;padding:16px 0">No files yet</p>'}
         </div>
       </div>
     </div>
@@ -329,21 +710,21 @@ function renderFolders() {
       <div class="page-header">
         <div>
           <h1 class="page-title">${esc(currentFolder.name)}</h1>
-          <p class="page-subtitle">${subFolders.length} sub-folder${subFolders.length!==1?'s':''} · ${folderFiles.length} file${folderFiles.length!==1?'s':''}</p>
+          <p class="page-subtitle">${subFolders.length ? `${countBadge(subFolders.length)} sub-folder${subFolders.length!==1?'s':''}` : ''} ${folderFiles.length ? `${countBadge(folderFiles.length)} file${folderFiles.length!==1?'s':''}` : ''}</p>
         </div>
-        ${State.isAdmin ? `
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn btn-primary btn-sm" onclick="openUploadInFolder('${currentFolder.id}')">Upload</button>
-          <button class="btn btn-secondary btn-sm" onclick="createSubFolder('${currentFolder.id}','${esc(currentFolder.name)}')">+ Sub-folder</button>
-          <button class="btn btn-ghost btn-sm" onclick="editFolder('${currentFolder.id}')">Edit</button>
-          <button class="btn btn-danger btn-sm" onclick="trashFolder('${currentFolder.id}')">Delete</button>
-        </div>` : ''}
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          ${viewToggleControl()}
+          ${State.isAdmin ? `
+            <button class="btn btn-sm" style="background:linear-gradient(135deg,#2563EB,#3B82F6);color:#fff;border:none;padding:8px 16px;border-radius:10px;font-weight:600;cursor:pointer;white-space:nowrap;box-shadow:0 3px 10px rgba(37,99,235,.3)" onclick="openUploadInFolder('${currentFolder.id}')">Upload</button>
+            <button class="btn btn-secondary btn-sm" onclick="createSubFolder('${currentFolder.id}','${esc(currentFolder.name)}')">+ Sub-folder</button>
+            <button class="btn btn-ghost btn-sm" onclick="editFolder('${currentFolder.id}')">Edit</button>
+            <button class="btn btn-danger btn-sm" onclick="trashFolder('${currentFolder.id}')">Delete</button>
+          ` : ''}
+        </div>
       </div>
 
       ${subFolders.length ? `
-        <div class="section-header" style="margin-bottom:12px">
-          <h2 class="section-title">Sub-folders (${subFolders.length})</h2>
-        </div>
+        <div class="event-section-header"><span>Sub-folders</span><span class="event-section-count">${subFolders.length}</span></div>
         ${State.viewMode === 'grid'
           ? `<div class="folder-grid stagger">${subFolders.map(folderCard).join('')}</div>`
           : `<div class="list-view stagger">${subFolders.map(folderRow).join('')}</div>`}
@@ -351,9 +732,7 @@ function renderFolders() {
       ` : ''}
 
       ${folderFiles.length ? `
-        <div class="section-header" style="margin-bottom:12px">
-          <h2 class="section-title">Files (${folderFiles.length})</h2>
-        </div>
+        <div class="event-section-header"><span>Files</span><span class="event-section-count">${folderFiles.length}</span></div>
         ${fileGrid(folderFiles)}
       ` : ''}
 
@@ -372,8 +751,8 @@ function renderFolders() {
   return `
     ${breadcrumb}
     <div class="page-header">
-      <div><h1 class="page-title">Folders</h1><p class="page-subtitle">${roots.length} folder${roots.length!==1?'s':''}</p></div>
-      ${State.isAdmin ? `<button class="btn btn-primary btn-sm" onclick="openNewFolderModal()">+ New Folder</button>` : ''}
+      <div><h1 class="page-title">Folders ${countBadge(roots.length)}</h1></div>
+      <div style="display:flex;gap:8px;align-items:center">${viewToggleControl()}${State.isAdmin ? `<button class="btn btn-sm" style="background:linear-gradient(135deg,#2563EB,#3B82F6);color:#fff;border:none;padding:8px 16px;border-radius:10px;font-weight:600;cursor:pointer" onclick="openNewFolderModal('blue')">+ New Folder</button>` : ''}</div>
     </div>
     ${roots.length
       ? (State.viewMode === 'grid'
@@ -388,8 +767,8 @@ function openUploadInFolder(folderId) {
   if (el) el.value = folderId;
 }
 
-function openNewFolderModal() {
-  openModal('folder-modal');
+function openNewFolderModal(theme) {
+  openModalWithTheme('folder-modal', theme || 'blue');
   setTimeout(() => {
     const el = document.getElementById('f-parent');
     if (el) el.value = '';
@@ -397,7 +776,7 @@ function openNewFolderModal() {
 }
 
 function createSubFolder(parentId, parentName) {
-  openModal('folder-modal');
+  openModalWithTheme('folder-modal','blue');
   document.getElementById('folder-modal-title').textContent = `Sub-folder inside "${parentName}"`;
   document.getElementById('folder-save-label').textContent  = 'Create Sub-folder';
   document.getElementById('folder-edit-id').value = '';
@@ -412,8 +791,8 @@ function renderFiles() {
   const list = filterFiles(State.files);
   return `
     <div class="page-header">
-      <div><h1 class="page-title">All Files</h1><p class="page-subtitle">${list.length} file${list.length!==1?'s':''}</p></div>
-      ${State.isAdmin ? `<button class="btn btn-primary btn-sm" onclick="openModal('upload-modal')">Upload</button>` : ''}
+      <div><h1 class="page-title">All Files ${countBadge(list.length)}</h1></div>
+      <div style="display:flex;gap:8px;align-items:center">${sortControl()}${filterControl('type-year')}${viewToggleControl()}${State.isAdmin?`<button class="btn btn-sm" style="background:linear-gradient(135deg,#0D9488,#0F766E);color:#fff;border:none;padding:8px 16px;border-radius:10px;font-weight:600;cursor:pointer;white-space:nowrap;box-shadow:0 3px 10px rgba(13,148,136,.3)" onclick="openModalWithTheme('upload-modal','teal')">Upload</button>`:''}</div>
     </div>
     ${list.length ? fileGrid(list) : emptyState('No files yet', 'Upload your first file', fileIcon())}`;
 }
@@ -422,30 +801,88 @@ function renderVideos() {
   const list = filterFiles(State.files.filter(f => f.file_type === 'video'));
   return `
     <div class="page-header">
-      <div><h1 class="page-title">Videos</h1><p class="page-subtitle">${list.length} video${list.length!==1?'s':''}</p></div>
-      ${State.isAdmin ? `<button class="btn btn-primary btn-sm" onclick="openModal('upload-modal')">Upload</button>` : ''}
+      <div><h1 class="page-title">Videos ${countBadge(list.length)}</h1></div>
+      <div style="display:flex;gap:8px;align-items:center">${sortControl()}${filterControl('year-month')}${viewToggleControl()}${State.isAdmin?`<button class="btn btn-sm" style="background:linear-gradient(135deg,#4F46E5,#7C3AED);color:#fff;border:none;padding:8px 16px;border-radius:10px;font-weight:600;cursor:pointer;white-space:nowrap" onclick="openModalWithTheme('upload-modal','purple')">Upload</button>`:''}</div>
     </div>
-    ${list.length ? fileGrid(list) : emptyState('No videos yet', 'Upload your video files', videoIcon())}`;
+    ${list.length ? fileGrid(list) : emptyState('No videos yet', 'Add videos via the Upload button', videoIcon())}`;
 }
 
 function renderImages() {
   const list = filterFiles(State.files.filter(f => f.file_type === 'image'));
   return `
     <div class="page-header">
-      <div><h1 class="page-title">Images</h1><p class="page-subtitle">${list.length} image${list.length!==1?'s':''}</p></div>
-      ${State.isAdmin ? `<button class="btn btn-primary btn-sm" onclick="openModal('upload-modal')">Upload</button>` : ''}
+      <div><h1 class="page-title">Images ${countBadge(list.length)}</h1></div>
+      <div style="display:flex;gap:8px;align-items:center">${sortControl()}${filterControl('year-month')}${viewToggleControl()}${State.isAdmin?`<button class="btn btn-sm" style="background:linear-gradient(135deg,#EC4899,#DB2777);color:#fff;border:none;padding:8px 16px;border-radius:10px;font-weight:600;cursor:pointer;white-space:nowrap" onclick="openModalWithTheme('upload-modal','pink')">Upload</button>`:''}</div>
     </div>
     ${list.length ? fileGrid(list) : emptyState('No images yet', 'Upload your image files', imageIcon())}`;
 }
 
 function filterFiles(list) {
-  if (!State.search) return list;
-  const q = State.search;
-  return list.filter(f =>
-    (f.name||'').toLowerCase().includes(q) ||
-    (f.original_name||'').toLowerCase().includes(q) ||
-    (f.extension||'').toLowerCase().includes(q)
-  );
+  let result = list;
+  if (State.search) {
+    const q = State.search;
+    result = result.filter(f =>
+      (f.name||'').toLowerCase().includes(q) ||
+      (f.original_name||'').toLowerCase().includes(q) ||
+      (f.extension||'').toLowerCase().includes(q)
+    );
+  }
+  if (State.filterType)  result = result.filter(f => f.file_type === State.filterType);
+  if (State.filterYear)  result = result.filter(f => new Date(f.created_at).getFullYear() == State.filterYear);
+  if (State.filterMonth) result = result.filter(f => (new Date(f.created_at).getMonth() + 1) == State.filterMonth);
+  return sortFiles(result);
+}
+
+// ── Sort ──────────────────────────────────────────────────────
+function sortFiles(list) {
+  const s = [...list];
+  if (State.sortBy === 'name_asc')  return s.sort((a,b) => (a.original_name||a.name||'').localeCompare(b.original_name||b.name||''));
+  if (State.sortBy === 'name_desc') return s.sort((a,b) => (b.original_name||b.name||'').localeCompare(a.original_name||a.name||''));
+  if (State.sortBy === 'date_asc')  return s.sort((a,b) => new Date(a.created_at)-new Date(b.created_at));
+  if (State.sortBy === 'year_desc') return s.sort((a,b) => {
+    const ay = new Date(a.created_at).getFullYear(), by = new Date(b.created_at).getFullYear();
+    return by !== ay ? by - ay : new Date(b.created_at)-new Date(a.created_at);
+  });
+  return s.sort((a,b) => new Date(b.created_at)-new Date(a.created_at)); // date_desc
+}
+function setSortBy(val) { State.sortBy = val; renderView(); }
+function sortControl() {
+  return `<select class="sort-select" onchange="setSortBy(this.value)">
+    <option value="date_desc" ${State.sortBy==='date_desc'?'selected':''}>Newest first</option>
+    <option value="date_asc"  ${State.sortBy==='date_asc' ?'selected':''}>Oldest first</option>
+    <option value="name_asc"  ${State.sortBy==='name_asc' ?'selected':''}>A → Z</option>
+    <option value="name_desc" ${State.sortBy==='name_desc'?'selected':''}>Z → A</option>
+    <option value="year_desc" ${State.sortBy==='year_desc'?'selected':''}>By Year</option>
+  </select>`;
+}
+
+function filterControl(pageType) {
+  const years = [...new Set(State.files.map(f => new Date(f.created_at).getFullYear()))].sort((a,b)=>b-a);
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const yearSel = `<select class="sort-select" onchange="setFilter('filterYear',this.value)">
+    <option value="">All Years</option>
+    ${years.map(y=>`<option value="${y}" ${State.filterYear==y?'selected':''}>${y}</option>`).join('')}
+  </select>`;
+  const monthSel = `<select class="sort-select" onchange="setFilter('filterMonth',this.value)">
+    <option value="">All Months</option>
+    ${months.map((m,i)=>`<option value="${i+1}" ${State.filterMonth==i+1?'selected':''}>${m}</option>`).join('')}
+  </select>`;
+  const typeSel = `<select class="sort-select" onchange="setFilter('filterType',this.value)">
+    <option value="">All Types</option>
+    <option value="video" ${State.filterType==='video'?'selected':''}>Videos</option>
+    <option value="image" ${State.filterType==='image'?'selected':''}>Photos</option>
+    <option value="document" ${State.filterType==='document'?'selected':''}>Documents</option>
+    <option value="other" ${State.filterType==='other'?'selected':''}>Other</option>
+  </select>`;
+  if (pageType === 'year-month') return yearSel + monthSel;
+  if (pageType === 'type')       return typeSel;
+  if (pageType === 'type-year')  return typeSel + yearSel;
+  if (pageType === 'fav') return `<select class="sort-select" onchange="setFilter('filterType',this.value)">
+    <option value="">All Types</option>
+    <option value="video" ${State.filterType==='video'?'selected':''}>Videos</option>
+    <option value="image" ${State.filterType==='image'?'selected':''}>Photos</option>
+  </select>`;
+  return '';
 }
 
 function fileGrid(list) {
@@ -454,32 +891,69 @@ function fileGrid(list) {
     : `<div class="file-grid stagger">${list.map(fileCard).join('')}</div>`;
 }
 
+function titleColor(str) {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) h = str.charCodeAt(i) + ((h << 5) - h);
+  return `hsl(${Math.abs(h) % 360},52%,42%)`;
+}
+
+function fileThumb(f) {
+  if (f.thumbnail_url)
+    return `<img src="${esc(f.thumbnail_url)}" loading="lazy" style="width:100%;height:100%;object-fit:cover" />`;
+  if (f.file_type === 'image' && f.file_url && !f.file_path?.startsWith('url:'))
+    return `<img src="${esc(f.file_url)}" alt="${esc(f.name)}" loading="lazy" />`;
+  if (f.extension === 'youtube') {
+    const id = f.file_url?.match(/(?:v=|youtu\.be\/)([^&?\s]+)/)?.[1];
+    if (id) return `<img src="https://img.youtube.com/vi/${id}/mqdefault.jpg" loading="lazy" style="width:100%;height:100%;object-fit:cover" />`;
+  }
+  if (f.extension === 'vimeo') {
+    const id = f.file_url?.match(/vimeo\.com\/(\d+)/)?.[1];
+    if (id) return `<img src="https://vumbnail.com/${id}.jpg" loading="lazy" style="width:100%;height:100%;object-fit:cover" />`;
+  }
+  if (f.extension === 'canva') {
+    const title = f.original_name || f.name || 'Canva Video';
+    const c1 = titleColor(title), c2 = titleColor(title + '_2');
+    const ev = f.event_id ? State.events.find(e => e.id === f.event_id) : null;
+    const bgStyle = ev?.cover_image_url
+      ? `background:url('${esc(ev.cover_image_url)}') center/cover no-repeat`
+      : `background:linear-gradient(135deg,${c1},${c2})`;
+    return `<div style="width:100%;height:100%;${bgStyle};position:relative;display:flex;align-items:center;justify-content:center">
+      ${ev?.cover_image_url ? `<div style="position:absolute;inset:0;background:rgba(0,0,0,.45)"></div>` : ''}
+      <div style="position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:10px;text-align:center;gap:6px">
+        <div style="width:36px;height:36px;background:rgba(255,255,255,.25);border:2px solid rgba(255,255,255,.8);border-radius:50%;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px)">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#fff" style="width:16px;height:16px;margin-left:2px"><polygon points="5,3 19,12 5,21"/></svg>
+        </div>
+        <span style="font-size:10px;font-weight:700;color:#fff;text-shadow:0 1px 4px rgba(0,0,0,.6);line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;max-width:100%">${esc(title)}</span>
+        <span style="font-size:8px;font-weight:700;color:rgba(255,255,255,.7);letter-spacing:.1em">CANVA</span>
+      </div>
+    </div>`;
+  }
+  const isUrl = f.file_path?.startsWith('url:');
+  const ext   = (f.extension||'link').toUpperCase();
+  return `<div class="file-icon-wrap ${isUrl?'url-thumb':''}" style="color:var(--green)">${fileTypeIcon(f.file_type)}${isUrl?`<span class="url-badge">${esc(ext)}</span>`:''}</div>`;
+}
+
 function fileCard(f) {
-  const isImg   = f.file_type === 'image';
-  const isUrl   = f.file_path?.startsWith('url:');
-  const extBadge = isUrl ? (f.extension||'link').toUpperCase() : (f.extension||'').toUpperCase();
-  const thumb = isImg && f.file_url
-    ? `<img src="${esc(f.file_url)}" alt="${esc(f.name)}" loading="lazy" />`
-    : isUrl
-      ? `<div class="file-icon-wrap url-thumb" style="color:var(--green)">${urlTypeIcon(f.extension)}
-           <span class="url-badge">${extBadge}</span></div>`
-      : `<div class="file-icon-wrap" style="color:var(--green)">${fileTypeIcon(f.file_type)}</div>`;
+  const extBadge = (f.extension||'').toUpperCase();
+  const iconMove = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`;
+  const iconHeart = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="${f.is_favorite?'#EC4899':'none'}" stroke="#EC4899" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>`;
+  const iconTrash = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3,6 5,6 21,6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>`;
   return `
   <div class="file-card">
     <div class="file-thumb" onclick="previewFile('${f.id}')" style="cursor:pointer" title="Preview">
-      ${thumb}
+      ${fileThumb(f)}
     </div>
     <p class="file-name" title="${esc(f.original_name)}">${esc(f.name || f.original_name)}</p>
     <p class="file-meta">${f.file_size ? formatBytes(f.file_size)+' · ' : ''}${extBadge}</p>
     ${State.isAdmin ? `
     <div class="file-card-actions">
-      <button class="btn btn-ghost btn-xs" onclick="previewFile('${f.id}')">View</button>
-      <button class="btn btn-ghost btn-xs" onclick="openMoveModal('${f.id}')">Move</button>
-      <button class="btn btn-ghost btn-xs fav-btn${f.is_favorite?' active':''}" onclick="toggleFavorite('${f.id}',${f.is_favorite})">${f.is_favorite?'♥':'♡'}</button>
-      <button class="btn btn-danger btn-xs" onclick="trashItem('${f.id}')">Del</button>
+      <button class="btn btn-xs fc-view-btn" onclick="previewFile('${f.id}')">View</button>
+      <button class="fc-icon-btn" title="Move" onclick="openMoveModal('${f.id}')">${iconMove}</button>
+      <button class="fc-icon-btn fc-fav-btn${f.is_favorite?' active':''}" title="${f.is_favorite?'Unfavorite':'Favorite'}" onclick="toggleFavorite('${f.id}',${f.is_favorite})">${iconHeart}</button>
+      <button class="fc-icon-btn fc-del-btn" title="Delete" onclick="trashItem('${f.id}')">${iconTrash}</button>
     </div>` : `
     <div class="file-card-actions">
-      <button class="btn btn-ghost btn-xs" onclick="previewFile('${f.id}')">View</button>
+      <button class="btn btn-xs fc-view-btn" onclick="previewFile('${f.id}')">View</button>
     </div>`}
   </div>`;
 }
@@ -488,7 +962,7 @@ function fileListRow(f) {
   const folderName = f.folder_id ? (State.folders.find(fd => fd.id === f.folder_id)?.name || '') : '';
   return `
   <div class="list-row">
-    <div class="list-thumb" style="width:36px;height:36px;color:var(--green)">${fileTypeIcon(f.file_type)}</div>
+    <div class="list-thumb">${fileTypeIcon(f.file_type)}</div>
     <div class="list-info">
       <p class="list-name">${esc(f.original_name)}</p>
       <p class="list-meta">${formatBytes(f.file_size)} · ${timeAgo(f.created_at)}${folderName ? ` · ${esc(folderName)}` : ''}</p>
@@ -506,6 +980,7 @@ function fileListRow(f) {
 
 // ── Events ────────────────────────────────────────────────────
 function renderEvents() {
+  if (State.selectedEvent) return renderEventDetail(State.selectedEvent);
   let list = State.events;
   if (State.search) list = list.filter(e =>
     e.name.toLowerCase().includes(State.search) ||
@@ -513,8 +988,8 @@ function renderEvents() {
   );
   return `
     <div class="page-header">
-      <div><h1 class="page-title">Events</h1><p class="page-subtitle">${list.length} event${list.length!==1?'s':''}</p></div>
-      ${State.isAdmin ? `<button class="btn btn-primary btn-sm" onclick="openModal('event-modal')">+ New Event</button>` : ''}
+      <div><h1 class="page-title">Events ${countBadge(list.length)}</h1></div>
+      <div style="display:flex;gap:8px;align-items:center">${viewToggleControl()}${State.isAdmin ? `<button class="btn btn-sm" style="background:linear-gradient(135deg,#F97316,#EA580C);color:#fff;border:none;padding:8px 16px;border-radius:10px;font-weight:600;cursor:pointer" onclick="openModalWithTheme('event-modal','orange')">+ New Event</button>` : ''}</div>
     </div>
     ${list.length
       ? (State.viewMode === 'grid'
@@ -523,9 +998,71 @@ function renderEvents() {
       : emptyState('No events yet', State.isAdmin ? 'Create your first event' : 'Events will appear here', calIcon())}`;
 }
 
-function eventCard(ev) {
+function renderEventDetail(evId) {
+  const ev = State.events.find(e => e.id === evId);
+  if (!ev) { State.selectedEvent = null; return renderEvents(); }
+  const relFiles   = sortFiles(State.files.filter(f => f.event_id === evId));
+  const relFolders = State.folders.filter(f => f.event_id === evId);
+  const dateStr    = ev.event_date ? new Date(ev.event_date).toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'}) : null;
   return `
-  <div class="project-card">
+    <div class="breadcrumb">
+      <a onclick="State.selectedEvent=null;renderView()" style="cursor:pointer">Events</a>
+      ${svgWrap('<polyline points="9,18 15,12 9,6"/>',12)}
+      <span>${esc(ev.name)}</span>
+    </div>
+
+    ${ev.cover_image_url ? `
+    <div class="event-hero">
+      <img src="${esc(ev.cover_image_url)}" alt="${esc(ev.name)}" />
+      <div class="event-hero-overlay">
+        <h1 class="event-hero-title">${esc(ev.name)}</h1>
+        ${dateStr ? `<p class="event-hero-meta">${dateStr}</p>` : ''}
+      </div>
+    </div>` : `
+    <div class="page-header" style="margin-bottom:4px">
+      <div>
+        <h1 class="page-title">${esc(ev.name)}</h1>
+        ${dateStr ? `<p class="page-subtitle">${dateStr}</p>` : ''}
+      </div>
+    </div>`}
+
+    <div class="event-toolbar">
+      <p class="event-toolbar-meta">${relFiles.length} file${relFiles.length!==1?'s':''}${relFolders.length ? ` · ${relFolders.length} folder${relFolders.length!==1?'s':''}` : ''}</p>
+      <div style="display:flex;gap:8px;align-items:center">
+        ${sortControl()}${viewToggleControl()}
+        ${State.isAdmin ? `<button class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="editEvent('${ev.id}')">Edit Event</button>` : ''}
+      </div>
+    </div>
+
+    ${ev.description ? `<p class="event-description">${esc(ev.description)}</p>` : ''}
+
+    ${relFolders.length ? `
+      <div class="event-section-header"><span>Folders</span><span class="event-section-count">${relFolders.length}</span></div>
+      ${State.viewMode === 'grid'
+        ? `<div class="card-grid stagger event-folder-list">${relFolders.map(f=>`
+            <div class="project-card" onclick="navigate('folders');setTimeout(()=>enterFolder('${f.id}','${esc(f.name)}'),80)" style="cursor:pointer">
+              <div class="project-thumb" style="background:#FFF7ED;display:flex;align-items:center;justify-content:center;color:#F97316">${folderIcon()}</div>
+              <div class="project-info"><h4>${esc(f.name)}</h4>${f.description?`<p style="font-size:11px;color:var(--text-secondary)">${esc(f.description)}</p>`:''}</div>
+            </div>`).join('')}
+           </div>`
+        : `<div class="list-view stagger event-folder-list">${relFolders.map(f=>`
+            <div class="list-row" onclick="navigate('folders');setTimeout(()=>enterFolder('${f.id}','${esc(f.name)}'),80)" style="cursor:pointer">
+              <div class="list-thumb" style="color:#F97316">${folderIcon()}</div>
+              <div class="list-info"><p class="list-name">${esc(f.name)}</p><p class="list-meta">${esc(f.description||'')}</p></div>
+              <div style="color:var(--text-secondary);padding-right:8px">${svgWrap('<polyline points="9,18 15,12 9,6"/>',16)}</div>
+            </div>`).join('')}
+           </div>`}` : ''}
+
+    ${relFiles.length ? `
+      <div class="event-section-header"><span>Files</span><span class="event-section-count">${relFiles.length}</span></div>
+      ${fileGrid(relFiles)}`
+    : (!relFolders.length ? emptyState('No files linked yet', State.isAdmin?'Upload files and link this event':'Nothing here yet', calIcon()) : '')}`;
+}
+
+function eventCard(ev) {
+  const fileCount = State.files.filter(f => f.event_id === ev.id).length;
+  return `
+  <div class="project-card event-clickable" onclick="openEventDetail('${ev.id}',event)">
     ${ev.cover_image_url
       ? `<div class="project-thumb"><img src="${esc(ev.cover_image_url)}" loading="lazy" /></div>`
       : `<div class="project-thumb" style="background:var(--mint);display:flex;align-items:center;justify-content:center;color:var(--green);opacity:.5">${calIcon()}</div>`}
@@ -533,27 +1070,35 @@ function eventCard(ev) {
       <h4>${esc(ev.name)}</h4>
       ${ev.event_date ? `<p class="project-cat">${new Date(ev.event_date).toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'})}</p>` : ''}
       ${ev.description ? `<p style="font-size:11px;color:var(--text-secondary);margin-top:4px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${esc(ev.description)}</p>` : ''}
+      <p style="font-size:11px;color:var(--green);margin-top:6px;font-weight:600">${fileCount} file${fileCount!==1?'s':''}</p>
     </div>
     ${State.isAdmin ? `
     <div class="file-card-actions">
-      <button class="btn btn-ghost btn-xs" onclick="editEvent('${ev.id}')">Edit</button>
-      <button class="btn btn-danger btn-xs" onclick="deleteEvent('${ev.id}')">Del</button>
+      <button class="btn btn-ghost btn-xs" onclick="event.stopPropagation();editEvent('${ev.id}')">Edit</button>
+      <button class="btn btn-danger btn-xs" onclick="event.stopPropagation();deleteEvent('${ev.id}')">Del</button>
     </div>` : ''}
   </div>`;
 }
 
+function openEventDetail(evId, e) {
+  if (e) e.stopPropagation();
+  State.selectedEvent = evId;
+  renderView();
+}
+
 function eventListRow(ev) {
+  const fileCount = State.files.filter(f => f.event_id === ev.id).length;
   return `
-  <div class="list-row">
+  <div class="list-row event-clickable" onclick="openEventDetail('${ev.id}',event)" style="cursor:pointer">
     <div class="list-thumb" style="color:var(--green)">${calIcon()}</div>
     <div class="list-info">
       <p class="list-name">${esc(ev.name)}</p>
-      <p class="list-meta">${ev.event_date ? new Date(ev.event_date).toLocaleDateString() : 'No date'}</p>
+      <p class="list-meta">${ev.event_date ? new Date(ev.event_date).toLocaleDateString() : 'No date'} · ${fileCount} file${fileCount!==1?'s':''}</p>
     </div>
     ${State.isAdmin ? `
     <div class="row-actions">
-      <button class="btn btn-ghost btn-xs" onclick="editEvent('${ev.id}')">Edit</button>
-      <button class="btn btn-danger btn-xs" onclick="deleteEvent('${ev.id}')">Del</button>
+      <button class="btn btn-ghost btn-xs" onclick="event.stopPropagation();editEvent('${ev.id}')">Edit</button>
+      <button class="btn btn-danger btn-xs" onclick="event.stopPropagation();deleteEvent('${ev.id}')">Del</button>
     </div>` : ''}
   </div>`;
 }
@@ -567,7 +1112,8 @@ function renderFavorites() {
   }
   return `
     <div class="page-header">
-      <div><h1 class="page-title">Favorites</h1><p class="page-subtitle">${favF.length} item${favF.length!==1?'s':''}</p></div>
+      <div><h1 class="page-title">Favorites ${countBadge(favF.length)}</h1></div>
+      <div style="display:flex;gap:8px;align-items:center">${sortControl()}${filterControl('fav')}${viewToggleControl()}</div>
     </div>
     ${favF.length ? fileGrid(favF) : emptyState('No favorites yet', 'Heart any file to save it here', heartIcon())}`;
 }
@@ -582,7 +1128,8 @@ function renderRecent() {
   }
   return `
     <div class="page-header">
-      <div><h1 class="page-title">Recent</h1><p class="page-subtitle">Last 30 days · ${recentF.length} file${recentF.length!==1?'s':''}</p></div>
+      <div><h1 class="page-title">Recent ${countBadge(recentF.length)}</h1><p class="page-subtitle">Last 30 days</p></div>
+      <div style="display:flex;gap:8px;align-items:center">${sortControl()}${filterControl('type')}${viewToggleControl()}</div>
     </div>
     ${recentF.length ? fileGrid(recentF) : emptyState('Nothing recent', 'Files uploaded in the last 30 days appear here', clockIcon())}`;
 }
@@ -597,7 +1144,8 @@ function renderArchive() {
   );
   return `
     <div class="page-header">
-      <div><h1 class="page-title">Archive</h1><p class="page-subtitle">Files older than 90 days · ${list.length} file${list.length!==1?'s':''}</p></div>
+      <div><h1 class="page-title">Archive ${countBadge(list.length)}</h1><p class="page-subtitle">Files older than 90 days</p></div>
+      <div style="display:flex;gap:8px;align-items:center">${sortControl()}${viewToggleControl()}</div>
     </div>
     ${list.length ? fileGrid(list) : emptyState('Archive is empty', 'Files older than 90 days appear here', archiveIcon())}`;
 }
@@ -640,42 +1188,337 @@ async function loadTrashContent() {
 
 // ── Settings ──────────────────────────────────────────────────
 function renderSettings() {
-  return `
-    <div class="page-header"><h1 class="page-title">Settings</h1></div>
-    <div style="max-width:620px;display:flex;flex-direction:column;gap:20px">
-      <div class="card">
-        <div class="card-header"><h3 class="card-title">Admin Access</h3></div>
-        <div class="card-body">
-          ${State.isAdmin
-            ? `<p style="color:var(--green);font-size:13px;margin-bottom:12px">✓ Signed in as <strong>${State.user?.email}</strong></p>
-               <button class="btn btn-danger" onclick="adminLogout()">Sign out</button>`
-            : `<p style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">Press <kbd>Ctrl+Shift+A</kbd> anywhere to open admin login.</p>
-               <button class="btn btn-primary" onclick="openModal('admin-login-modal')">Admin Login</button>`}
+
+  // ── Non-admin: two-column read-only view ──────────────────────
+  if (!State.isAdmin) {
+    const iconPerson = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`;
+    const iconMail   = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>`;
+    const iconInfo   = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`;
+    const iconCal    = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>`;
+    const memberStr  = 'Oct 2024';
+
+    return `
+    <div class="page-header">
+      <div style="display:flex;align-items:center;gap:14px">
+        <div style="width:48px;height:48px;background:#F0F9FF;border-radius:14px;display:flex;align-items:center;justify-content:center;color:#0EA5E9;flex-shrink:0">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:22px;height:22px"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </div>
+        <div>
+          <h1 class="page-title" style="margin:0">Settings</h1>
+          <p style="font-size:13px;color:#64748B;margin:2px 0 0">View your account information and application details.</p>
         </div>
       </div>
-      <div class="card">
-        <div class="card-header"><h3 class="card-title">Workspace Stats</h3></div>
-        <div class="card-body" style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">
-          ${[['Files', State.files.length], ['Folders', State.folders.length],
-             ['Events', State.events.length], ['Categories', State.categories.length],
-             ['Storage', formatBytes(State.files.reduce((s,f)=>s+(f.file_size||0),0))]
-            ].map(([l,v]) => `<div style="text-align:center;padding:12px;background:var(--bg);border-radius:8px"><p style="font-size:20px;font-weight:800;color:var(--green-dark)">${v}</p><p style="font-size:11px;color:var(--text-secondary)">${l}</p></div>`).join('')}
+    </div>
+
+    <div class="settings-layout settings-layout-nonadmin">
+      <!-- Left: Account Info + About -->
+      <div class="settings-left">
+        <div class="ps-guest-card">
+          <div class="ps-guest-card-head">
+            <div class="ps-section-icon" style="background:#F0F9FF;color:#0EA5E9">${iconPerson}</div>
+            <div style="flex:1">
+              <h4 style="font-size:14px;font-weight:700;color:#0F172A;margin:0">Account Information</h4>
+              <p style="font-size:12px;color:#64748B;margin:2px 0 0">Your account details and current status.</p>
+            </div>
+            <span class="ps-user-badge">User</span>
+          </div>
+          <div class="ps-guest-signin-row">
+            <div style="width:28px;height:28px;background:#DCFCE7;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+              <svg viewBox="0 0 24 24" fill="none" stroke="#16A34A" stroke-width="3" style="width:13px;height:13px"><polyline points="20,6 9,17 4,12"/></svg>
+            </div>
+            <span style="font-size:13px;color:#374151">Viewing as <strong style="color:#0EA5E9">Guest</strong></span>
+          </div>
+          <div style="margin-top:12px;padding-top:12px;border-top:1px solid #F3F4F6">
+            <p style="font-size:12px;color:#64748B;margin-bottom:10px">Press <kbd style="background:#F3F4F6;border:1px solid #E5E7EB;border-radius:4px;padding:1px 5px;font-size:11px">Ctrl+Shift+A</kbd> for admin login.</p>
+            <button class="btn ps-btn-cyan" style="width:100%;justify-content:center" onclick="openModal('admin-login-modal')">Admin Login</button>
+          </div>
         </div>
-      </div>
-      <div class="card">
-        <div class="card-header"><h3 class="card-title">Categories</h3></div>
-        <div class="card-body">
-          <div class="tags-row" style="flex-wrap:wrap;gap:8px">
-            ${State.categories.map(c => `<span class="tag" style="background:${c.color}22;color:${c.color};border:1px solid ${c.color}44">${esc(c.name)}</span>`).join('')}
+        <div class="ps-guest-card" style="margin-bottom:20px">
+          <div class="ps-guest-card-head">
+            <div class="ps-section-icon" style="background:#F0F9FF;color:#0EA5E9">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            </div>
+            <div>
+              <h4 style="font-size:14px;font-weight:700;color:#0F172A;margin:0">About</h4>
+            </div>
+          </div>
+          <div style="padding-top:4px">
+            <p style="font-size:13px;color:#64748B">${APP_NAME} v${APP_VERSION} — Motion Vault</p>
+            <p style="font-size:13px;color:#64748B;margin-top:4px;padding-bottom:8px">Powered by Supabase · Pure HTML/CSS/JS</p>
           </div>
         </div>
       </div>
-      <div class="card">
-        <div class="card-header"><h3 class="card-title">About</h3></div>
-        <div class="card-body">
-          <p style="font-size:13px;color:var(--text-secondary)">${APP_NAME} v${APP_VERSION} — Motion Vault</p>
-          <p style="font-size:13px;color:var(--text-secondary);margin-top:4px">Powered by Supabase · Pure HTML/CSS/JS</p>
+
+      <!-- Right: Profile read-only -->
+      <div class="settings-right">
+        <div class="ps-banner" style="justify-content:space-between">
+          <div style="display:flex;align-items:center;gap:16px">
+            <div class="ps-banner-icon">${iconPerson}</div>
+            <div>
+              <h2 class="ps-banner-title">Profile</h2>
+              <p class="ps-banner-sub">Your account information.</p>
+            </div>
+          </div>
+          <span class="ps-user-badge" style="position:relative;z-index:1">${iconPerson} User</span>
         </div>
+
+        <div class="ps-identity-card">
+          <div class="ps-avatar-wrap">
+            <img src="assets/myphoto.png" class="ps-avatar-img" alt="Bharat" />
+          </div>
+          <div class="ps-identity-info">
+            <h3 class="ps-identity-name">Bharat Chandra Mohanty</h3>
+            <div class="ps-identity-meta">
+              <span>${iconMail} bharatmohanty06@gmail.com</span>
+              <span>${iconCal} Member since ${memberStr}</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="ps-section-card">
+          <div class="ps-section-head">
+            <div class="ps-section-icon" style="background:#F0F9FF;color:#0EA5E9">${iconPerson}</div>
+            <div>
+              <h4>Profile Information</h4>
+              <p>Your account information is managed by the administrator.</p>
+            </div>
+          </div>
+          <div class="ps-readonly-row">
+            <div class="ps-readonly-icon">${iconPerson}</div>
+            <span class="ps-readonly-label">Full Name</span>
+            <span class="ps-readonly-value">Bharat Chandra Mohanty</span>
+          </div>
+          <div class="ps-readonly-row" style="margin-bottom:0">
+            <div class="ps-readonly-icon">${iconMail}</div>
+            <span class="ps-readonly-label">Email Address</span>
+            <span class="ps-readonly-value">bharatmohanty06@gmail.com</span>
+          </div>
+        </div>
+
+        <div class="ps-note-card" style="background:#F0F9FF;border-color:#BAE6FD">
+          <div class="ps-note-icon" style="background:#0EA5E9">${iconInfo}</div>
+          <div>
+            <strong style="color:#0369A1">Need to make changes?</strong>
+            <p style="color:#0EA5E9">To update your name, email address or profile photo, please contact the administrator.</p>
+          </div>
+        </div>
+      </div>
+    </div>`; // end non-admin
+  }
+
+  // ── Admin left column (no Stats/Categories) ───────────────────
+  const leftCol = `
+    <div class="card">
+      <div class="card-header"><h3 class="card-title">Admin Access</h3></div>
+      <div class="card-body">
+        <p style="color:#0EA5E9;font-size:13px;margin-bottom:12px">✓ Signed in as <strong>${esc(State.user?.email||'')}</strong></p>
+        <button class="btn btn-danger" onclick="adminLogout()">Sign out</button>
+      </div>
+    </div>
+    <div class="card" style="margin-bottom:20px">
+      <div class="card-header"><h3 class="card-title">About</h3></div>
+      <div class="card-body" style="padding-bottom:20px">
+        <p style="font-size:13px;color:var(--text-secondary)">${APP_NAME} v${APP_VERSION} — Motion Vault</p>
+        <p style="font-size:13px;color:var(--text-secondary);margin-top:4px">Powered by Supabase · Pure HTML/CSS/JS</p>
+      </div>
+    </div>`;
+
+  const profile     = State.profile || {};
+  const displayName = profile.full_name || State.user?.user_metadata?.full_name || 'Bharat Chandra Mohanty';
+  const email       = State.user?.email || '';
+  const avatarSrc   = State.profileAvatarUrl || 'assets/myphoto.png';
+  const memberSince = State.user?.created_at
+    ? new Date(State.user.created_at).toLocaleDateString('en-US',{month:'short',year:'numeric'})
+    : '';
+
+  const eyeIcon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
+
+  const photoTab = `
+    <div id="ps-panel-photo" style="display:${_settingsTab==='photo'?'block':'none'}">
+      <div class="ps-section-card">
+        <div class="ps-section-head">
+          <div class="ps-section-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21,15 16,10 5,21"/></svg>
+          </div>
+          <div>
+            <h4>Profile Photo</h4>
+            <p>Upload a profile photo (JPG, PNG, WebP · max 5 MB)</p>
+          </div>
+        </div>
+        <div class="ps-photo-area">
+          <img src="${avatarSrc}" id="ps-photo-preview" class="ps-photo-preview-img" alt="Preview" />
+          <div class="ps-photo-actions">
+            <label class="btn ps-btn-purple" style="cursor:pointer">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17,8 12,3 7,8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+              Choose Photo
+              <input type="file" accept="image/jpeg,image/png,image/webp" style="display:none" onchange="handleAvatarSelect(this)">
+            </label>
+            ${profile.avatar_path ? `<button class="btn btn-ghost" onclick="removeProfilePhoto()" style="color:#EF4444">Remove Photo</button>` : ''}
+          </div>
+        </div>
+        <div style="display:flex;justify-content:flex-end;margin-top:16px">
+          <button class="btn ps-btn-purple" id="ps-photo-save-btn" style="display:none" onclick="saveProfilePhoto()">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/></svg>
+            Save Photo
+          </button>
+        </div>
+      </div>
+      <div class="ps-note-card">
+        <div class="ps-note-icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></div>
+        <div><strong>Note</strong><p>Photo is stored securely. Only you can see or change it.</p></div>
+      </div>
+    </div>`;
+
+  const passTab = `
+    <div id="ps-panel-password" style="display:${_settingsTab==='password'?'block':'none'}">
+      <div class="ps-section-card">
+        <div class="ps-section-head">
+          <div class="ps-section-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          </div>
+          <div>
+            <h4>Change Password</h4>
+            <p>Secure your account with a strong password.</p>
+          </div>
+        </div>
+        <div class="ps-form-group">
+          <label class="ps-label">Current Password <span style="color:#EF4444">*</span></label>
+          <div class="ps-input-wrap">
+            <span class="ps-input-icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span>
+            <input type="password" id="ps-cur-pass" class="ps-input" placeholder="Enter current password" autocomplete="current-password" />
+            <button type="button" class="ps-eye-btn" onclick="togglePassVis('ps-cur-pass')">${eyeIcon}</button>
+          </div>
+        </div>
+        <div class="ps-form-group">
+          <label class="ps-label">New Password <span style="color:#EF4444">*</span></label>
+          <div class="ps-input-wrap">
+            <span class="ps-input-icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>
+            <input type="password" id="ps-new-pass" class="ps-input" placeholder="At least 6 characters" autocomplete="new-password" />
+            <button type="button" class="ps-eye-btn" onclick="togglePassVis('ps-new-pass')">${eyeIcon}</button>
+          </div>
+        </div>
+        <div class="ps-form-group">
+          <label class="ps-label">Confirm New Password <span style="color:#EF4444">*</span></label>
+          <div class="ps-input-wrap">
+            <span class="ps-input-icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>
+            <input type="password" id="ps-conf-pass" class="ps-input" placeholder="Repeat new password" autocomplete="new-password" />
+            <button type="button" class="ps-eye-btn" onclick="togglePassVis('ps-conf-pass')">${eyeIcon}</button>
+          </div>
+        </div>
+        <div style="display:flex;justify-content:flex-end;margin-top:8px">
+          <button class="btn ps-btn-purple" id="ps-pass-btn" onclick="changePassword()">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            Update Password
+          </button>
+        </div>
+      </div>
+    </div>`;
+
+  const infoTab = `
+    <div id="ps-panel-personal" style="display:${_settingsTab==='personal'?'block':'none'}">
+      <div class="ps-section-card">
+        <div class="ps-section-head">
+          <div class="ps-section-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          </div>
+          <div>
+            <h4>Personal Information</h4>
+            <p>Update your name and email address. Changes will be saved to your account.</p>
+          </div>
+        </div>
+        <div class="ps-form-group">
+          <label class="ps-label">Full Name <span style="color:#EF4444">*</span></label>
+          <div class="ps-input-wrap">
+            <span class="ps-input-icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></span>
+            <input type="text" id="ps-name" class="ps-input" value="${esc(displayName)}" placeholder="Your full name" autocomplete="name" />
+          </div>
+        </div>
+        <div class="ps-form-group">
+          <label class="ps-label">Email Address <span style="color:#EF4444">*</span></label>
+          <div class="ps-input-wrap">
+            <span class="ps-input-icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg></span>
+            <input type="email" id="ps-email" class="ps-input" value="${esc(email)}" placeholder="your@email.com" autocomplete="email" />
+          </div>
+        </div>
+        <div style="display:flex;justify-content:flex-end;margin-top:8px">
+          <button class="btn ps-btn-purple" id="ps-info-btn" onclick="savePersonalInfo()">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/></svg>
+            Save Changes
+          </button>
+        </div>
+      </div>
+      <div class="ps-note-card">
+        <div class="ps-note-icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></div>
+        <div><strong>Note</strong><p>Changes are updated in your Supabase account and reflected across the application, including the header profile.</p></div>
+      </div>
+    </div>`;
+
+  return `
+    <div class="page-header"><h1 class="page-title">Settings</h1></div>
+    <div class="settings-layout">
+      <div class="settings-left">${leftCol}</div>
+
+      <div class="settings-right">
+        <!-- Header banner -->
+        <div class="ps-banner">
+          <div class="ps-banner-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:22px;height:22px"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          </div>
+          <div>
+            <h2 class="ps-banner-title">Profile Settings</h2>
+            <p class="ps-banner-sub">Update your personal information, profile photo and security settings.</p>
+          </div>
+        </div>
+
+        <!-- Profile identity card -->
+        <div class="ps-identity-card">
+          <div class="ps-avatar-wrap">
+            <img src="${avatarSrc}" id="ps-avatar-img" class="ps-avatar-img" alt="${esc(displayName)}" />
+            <button class="ps-camera-btn" onclick="switchSettingsTab('photo')" title="Change photo">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+            </button>
+          </div>
+          <div class="ps-identity-info">
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+              <h3 id="ps-profile-name" class="ps-identity-name">${esc(displayName)}</h3>
+              <span class="ps-admin-badge">Admin</span>
+            </div>
+            <div class="ps-identity-meta">
+              <span>
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+                ${esc(email)}
+              </span>
+              ${memberSince ? `<span>
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                Member since ${memberSince}
+              </span>` : ''}
+            </div>
+          </div>
+        </div>
+
+        <!-- Shared message bar -->
+        <div id="ps-msg" class="ps-msg" style="display:none"></div>
+
+        <!-- Tabs -->
+        <div class="ps-tabs">
+          <button id="ps-tab-personal" class="ps-tab${_settingsTab==='personal'?' active':''}" onclick="switchSettingsTab('personal')">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+            Personal Information
+          </button>
+          <button id="ps-tab-password" class="ps-tab${_settingsTab==='password'?' active':''}" onclick="switchSettingsTab('password')">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            Change Password
+          </button>
+          <button id="ps-tab-photo" class="ps-tab${_settingsTab==='photo'?' active':''}" onclick="switchSettingsTab('photo')">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+            Profile Photo
+          </button>
+        </div>
+
+        <!-- Tab panels -->
+        ${infoTab}
+        ${passTab}
+        ${photoTab}
       </div>
     </div>`;
 }
@@ -747,7 +1590,7 @@ async function saveFolder() {
 function editFolder(id) {
   const f = State.folders.find(x => x.id === id);
   if (!f) return;
-  openModal('folder-modal');
+  openModalWithTheme('folder-modal','blue');
   document.getElementById('folder-modal-title').textContent = 'Edit Folder';
   document.getElementById('folder-save-label').textContent  = 'Save Changes';
   document.getElementById('folder-edit-id').value = id;
@@ -785,7 +1628,7 @@ async function saveEvent() {
 function editEvent(id) {
   const ev = State.events.find(x => x.id === id);
   if (!ev) return;
-  openModal('event-modal');
+  openModalWithTheme('event-modal','orange');
   document.getElementById('event-modal-title').textContent = 'Edit Event';
   document.getElementById('event-save-label').textContent  = 'Save Changes';
   document.getElementById('event-edit-id').value = id;
@@ -850,7 +1693,7 @@ function openMoveModal(fileId) {
     sel.innerHTML = `<option value="">Root (no folder)</option>` +
       State.folders.map(fd => `<option value="${fd.id}" ${f?.folder_id===fd.id?'selected':''}>${esc(fd.path || fd.name)}</option>`).join('');
   }
-  openModal('move-modal');
+  openModalWithTheme('move-modal', viewTheme());
 }
 
 async function confirmMoveFile() {
@@ -1156,6 +1999,40 @@ async function uploadEventCover(input) {
 }
 
 // ── Modals ────────────────────────────────────────────────────
+// Theme colours for modals: 'purple' | 'blue' | 'green' | 'orange'
+const MODAL_THEMES = {
+  'upload-modal': 'purple',
+  'folder-modal': 'blue',
+  'event-modal':  'orange',
+};
+function viewTheme() {
+  const map = {
+    files: 'teal', videos: 'purple', images: 'pink',
+    recent: 'blue', favorites: 'pink', events: 'orange',
+    folders: 'blue', archive: 'green', trash: 'green',
+  };
+  return map[State.view] || 'green';
+}
+function openModalWithTheme(id, theme) {
+  const t = theme || MODAL_THEMES[id] || null;
+  const el = document.getElementById(id);
+  if (el && t) {
+    el.classList.remove('modal-theme-purple','modal-theme-blue','modal-theme-green','modal-theme-orange','modal-theme-teal','modal-theme-pink');
+    el.classList.add('modal-theme-' + t);
+  }
+  openModal(id);
+}
+
+function toggleAvatarDropdown(e) {
+  e.stopPropagation();
+  const dd = document.getElementById('avatar-dropdown');
+  if (!dd) return;
+  const open = dd.classList.toggle('open');
+  if (open) {
+    setTimeout(() => document.addEventListener('click', () => dd.classList.remove('open'), { once: true }), 0);
+  }
+}
+
 function openModal(id) {
   const modal = document.getElementById(id); if (!modal) return;
   modal.classList.add('open'); document.body.style.overflow = 'hidden';
@@ -1424,7 +2301,7 @@ function openEditFileModal(fileId) {
     State.events.map(e => `<option value="${e.id}" ${f.event_id===e.id?'selected':''}>${esc(e.name)}</option>`).join('');
   document.getElementById('edit-file-event').innerHTML = eventOpts;
   closePreview();
-  openModal('edit-file-modal');
+  openModalWithTheme('edit-file-modal', viewTheme());
 }
 
 async function saveFileEdit() {
@@ -1452,6 +2329,7 @@ async function saveFileEdit() {
 
 // ── SVG icons ─────────────────────────────────────────────────
 const svgWrap    = (path, size=18) => `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:${size}px;height:${size}px">${path}</svg>`;
+const countBadge = (n) => `<span class="event-section-count">${n}</span>`;
 const fileIcon   = () => svgWrap('<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z"/><polyline points="14,2 14,8 20,8"/>');
 const folderIcon = () => svgWrap('<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>');
 const videoIcon  = () => svgWrap('<polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/>');

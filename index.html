@@ -28,8 +28,7 @@
   <aside id="sidebar">
     <div class="sidebar-logo">
       <div class="logo-icon">
-        <!-- Sparkles icon -->
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5z"/><path d="M5 3l.8 2.2L8 6l-2.2.8L5 9l-.8-2.2L2 6l2.2-.8z"/><path d="M19 14l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2L16 17l2.2-.8z"/></svg>
+        <span class="logo-letter">M</span>
       </div>
       <div class="logo-text">
         <h2>MyCreativeWork</h2>
@@ -39,7 +38,7 @@
 
     <nav class="sidebar-nav" id="sidebar-nav">
       <button class="nav-item active" data-view="dashboard" onclick="navigate('dashboard')">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
         Dashboard
       </button>
       <button class="nav-item" data-view="files" onclick="navigate('files')">
@@ -86,8 +85,14 @@
 
     <div class="sidebar-footer">
       <div class="admin-badge" id="admin-badge" style="display:none">
-        <p>Admin Mode Active</p>
-        <p>Full edit access enabled</p>
+        <div class="admin-badge-top">
+          <span class="admin-crown">👑</span>
+          <div>
+            <p class="admin-badge-title">Admin Mode</p>
+            <p class="admin-badge-sub">Full edit access enabled</p>
+          </div>
+        </div>
+        <span class="admin-active-pill">Active</span>
       </div>
     </div>
   </aside>
@@ -103,21 +108,45 @@
       <!-- Search -->
       <div class="search-wrap">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <input type="text" id="search-input" placeholder="Search folders, files, events…" oninput="handleSearch(this.value)" />
+        <input type="text" id="search-input" placeholder="Search files, folders, events..." oninput="handleSearch(this.value)" />
       </div>
 
       <!-- Header actions -->
       <div class="header-actions">
         <!-- Admin only buttons -->
         <div id="admin-actions" style="display:none; gap:8px; align-items:center;">
-          <button class="btn btn-secondary" onclick="openNewFolderModal()">
+          <button class="btn btn-header-folder" onclick="openNewFolderModal('blue')">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
-            <span class="hidden sm:inline">New Folder</span>
+            <span class="btn-label">New Folder</span>
           </button>
-          <button class="btn btn-primary" onclick="openModal('upload-modal')">
+          <button class="btn btn-header-upload" onclick="openModalWithTheme('upload-modal','purple')">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17,8 12,3 7,8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-            Upload
+            <span class="btn-label">Upload</span>
           </button>
+        </div>
+
+<!-- Admin avatar -->
+        <div class="header-avatar" id="header-avatar" style="display:none" onclick="toggleAvatarDropdown(event)">
+          <img src="assets/myphoto.png" class="avatar-photo" alt="Bharat" />
+          <div class="avatar-info">
+            <span class="avatar-name">Bharat Chandra Mohanty</span>
+            <span class="avatar-role">Admin</span>
+          </div>
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;color:#9ca3af"><polyline points="6 9 12 15 18 9"/></svg>
+          <div class="avatar-dropdown" id="avatar-dropdown">
+            <div class="avatar-dropdown-user">
+              <img src="assets/myphoto.png" class="avatar-dropdown-photo" alt="Bharat" />
+              <div>
+                <p class="avatar-dropdown-name">Bharat Chandra Mohanty</p>
+                <p class="avatar-dropdown-role">Administrator</p>
+              </div>
+            </div>
+            <div class="avatar-dropdown-divider"></div>
+            <button class="avatar-dropdown-item avatar-dropdown-signout" onclick="adminLogout()">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+              Sign Out
+            </button>
+          </div>
         </div>
 
         <!-- View toggle -->
@@ -177,7 +206,7 @@
         <input type="password" id="admin-password" placeholder="••••••••" onkeydown="if(event.key==='Enter') adminLogin()" />
       </div>
       <p style="font-size:11px;color:var(--text-secondary);margin-top:4px">
-        Use the email/password you created in Supabase → Authentication → Users
+        Use the email/password to Login
       </p>
     </div>
     <div class="modal-footer">
