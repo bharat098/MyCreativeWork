@@ -1237,59 +1237,104 @@ kbd { background: var(--bg); border: 1px solid var(--border); border-radius: 4px
 
 /* ── Per-page View button colours (matches sidebar nav accent) ── */
 /* All Files — teal */
-[data-view="files"] .file-card-actions .fc-view-btn {
+[data-view="files"] .file-card-actions .fc-view-btn, [data-view="files"] .list-row-actions .fc-view-btn {
   background: linear-gradient(135deg, #0D9488, #0F766E); color: #fff !important; border: none;
 }
-[data-view="files"] .file-card-actions .fc-view-btn:hover { background: linear-gradient(135deg, #0F766E, #115E59); color: #fff !important; }
+[data-view="files"] .file-card-actions .fc-view-btn:hover, [data-view="files"] .list-row-actions .fc-view-btn:hover { background: linear-gradient(135deg, #0F766E, #115E59); color: #fff !important; }
 
 /* Videos — purple */
-[data-view="videos"] .file-card-actions .fc-view-btn {
+[data-view="videos"] .file-card-actions .fc-view-btn, [data-view="videos"] .list-row-actions .fc-view-btn {
   background: linear-gradient(135deg, #7C3AED, #4F46E5); color: #fff !important; border: none;
 }
-[data-view="videos"] .file-card-actions .fc-view-btn:hover { background: linear-gradient(135deg, #6D28D9, #4338CA); color: #fff !important; }
+[data-view="videos"] .file-card-actions .fc-view-btn:hover, [data-view="videos"] .list-row-actions .fc-view-btn:hover { background: linear-gradient(135deg, #6D28D9, #4338CA); color: #fff !important; }
 
 /* Images — pink */
-[data-view="images"] .file-card-actions .fc-view-btn {
+[data-view="images"] .file-card-actions .fc-view-btn, [data-view="images"] .list-row-actions .fc-view-btn {
   background: linear-gradient(135deg, #EC4899, #DB2777); color: #fff !important; border: none;
 }
-[data-view="images"] .file-card-actions .fc-view-btn:hover { background: linear-gradient(135deg, #DB2777, #BE185D); color: #fff !important; }
+[data-view="images"] .file-card-actions .fc-view-btn:hover, [data-view="images"] .list-row-actions .fc-view-btn:hover { background: linear-gradient(135deg, #DB2777, #BE185D); color: #fff !important; }
 
 /* Recent — blue */
-[data-view="recent"] .file-card-actions .fc-view-btn {
+[data-view="recent"] .file-card-actions .fc-view-btn, [data-view="recent"] .list-row-actions .fc-view-btn {
   background: linear-gradient(135deg, #0EA5E9, #0284C7); color: #fff !important; border: none;
 }
-[data-view="recent"] .file-card-actions .fc-view-btn:hover { background: linear-gradient(135deg, #0284C7, #0369A1); color: #fff !important; }
+[data-view="recent"] .file-card-actions .fc-view-btn:hover, [data-view="recent"] .list-row-actions .fc-view-btn:hover { background: linear-gradient(135deg, #0284C7, #0369A1); color: #fff !important; }
 
 /* Favorites — red */
-[data-view="favorites"] .file-card-actions .fc-view-btn {
+[data-view="favorites"] .file-card-actions .fc-view-btn, [data-view="favorites"] .list-row-actions .fc-view-btn {
   background: linear-gradient(135deg, #EC4899, #DB2777); color: #fff !important; border: none;
 }
-[data-view="favorites"] .file-card-actions .fc-view-btn:hover { background: linear-gradient(135deg, #DB2777, #BE185D); color: #fff !important; }
+[data-view="favorites"] .file-card-actions .fc-view-btn:hover, [data-view="favorites"] .list-row-actions .fc-view-btn:hover { background: linear-gradient(135deg, #DB2777, #BE185D); color: #fff !important; }
 
 /* Events — orange */
-[data-view="events"] .file-card-actions .fc-view-btn {
+[data-view="events"] .file-card-actions .fc-view-btn, [data-view="events"] .list-row-actions .fc-view-btn {
   background: linear-gradient(135deg, #F97316, #EA580C); color: #fff !important; border: none;
 }
-[data-view="events"] .file-card-actions .fc-view-btn:hover { background: linear-gradient(135deg, #EA580C, #C2410C); color: #fff !important; }
+[data-view="events"] .file-card-actions .fc-view-btn:hover, [data-view="events"] .list-row-actions .fc-view-btn:hover { background: linear-gradient(135deg, #EA580C, #C2410C); color: #fff !important; }
 
 /* Folders — blue */
-[data-view="folders"] .file-card-actions .fc-view-btn {
+[data-view="folders"] .file-card-actions .fc-view-btn, [data-view="folders"] .list-row-actions .fc-view-btn {
   background: linear-gradient(135deg, #2563EB, #3B82F6); color: #fff !important; border: none;
 }
-[data-view="folders"] .file-card-actions .fc-view-btn:hover { background: linear-gradient(135deg, #1D4ED8, #2563EB); color: #fff !important; }
+[data-view="folders"] .file-card-actions .fc-view-btn:hover, [data-view="folders"] .list-row-actions .fc-view-btn:hover { background: linear-gradient(135deg, #1D4ED8, #2563EB); color: #fff !important; }
 
 /* Archive — slate */
-[data-view="archive"] .file-card-actions .fc-view-btn {
+[data-view="archive"] .file-card-actions .fc-view-btn, [data-view="archive"] .list-row-actions .fc-view-btn {
   background: linear-gradient(135deg, #475569, #64748B); color: #fff !important; border: none;
 }
-[data-view="archive"] .file-card-actions .fc-view-btn:hover { background: linear-gradient(135deg, #334155, #475569); color: #fff !important; }
+[data-view="archive"] .file-card-actions .fc-view-btn:hover, [data-view="archive"] .list-row-actions .fc-view-btn:hover { background: linear-gradient(135deg, #334155, #475569); color: #fff !important; }
 
 /* Trash — red */
-[data-view="trash"] .file-card-actions .fc-view-btn {
+[data-view="trash"] .file-card-actions .fc-view-btn, [data-view="trash"] .list-row-actions .fc-view-btn {
   background: linear-gradient(135deg, #EF4444, #DC2626); color: #fff !important; border: none;
 }
-[data-view="trash"] .file-card-actions .fc-view-btn:hover { background: linear-gradient(135deg, #DC2626, #B91C1C); color: #fff !important; }
+[data-view="trash"] .file-card-actions .fc-view-btn:hover, [data-view="trash"] .list-row-actions .fc-view-btn:hover { background: linear-gradient(135deg, #DC2626, #B91C1C); color: #fff !important; }
 .fav-btn.active { color: #DC2626; }
+
+/* ── List-row redesign (thumbnail + pills) ── */
+.list-row-thumb {
+  width: 56px; height: 56px; min-width: 56px;
+  border-radius: 10px;
+  overflow: hidden;
+  position: relative;
+  background: var(--mint);
+  flex-shrink: 0;
+}
+.list-row-thumb img,
+.list-row-thumb video,
+.list-row-thumb iframe { width: 100%; height: 100%; object-fit: cover; }
+
+.list-row-info { flex: 1; min-width: 0; }
+
+.list-row-tags { display: flex; gap: 4px; margin-top: 5px; flex-wrap: wrap; }
+.list-tag {
+  font-size: 10px; font-weight: 600; line-height: 1;
+  padding: 3px 8px; border-radius: 20px; white-space: nowrap;
+}
+.list-tag-type { background: #EEF2FF; color: #4F46E5; }
+.list-tag-ext  { background: #F3F4F6; color: #6B7280; }
+
+.list-row-actions {
+  display: flex; align-items: center; gap: 5px;
+  flex-shrink: 0;
+}
+.list-row-actions .fc-view-btn {
+  font-size: 11px; font-weight: 600;
+  padding: 5px 13px; border-radius: 20px;
+  border: none; color: #fff; cursor: pointer;
+  white-space: nowrap;
+}
+
+/* Per-page list-row-thumb background mirrors .list-thumb */
+[data-view="files"]     .list-row-thumb { background: #CCFBF1; }
+[data-view="videos"]    .list-row-thumb { background: #EDE9FE; }
+[data-view="images"]    .list-row-thumb { background: #FCE7F3; }
+[data-view="recent"]    .list-row-thumb { background: #E0F2FE; }
+[data-view="favorites"] .list-row-thumb { background: #FCE7F3; }
+[data-view="events"]    .list-row-thumb { background: #FFF7ED; }
+[data-view="folders"]   .list-row-thumb { background: #DBEAFE; }
+[data-view="archive"]   .list-row-thumb { background: #F1F5F9; }
+[data-view="trash"]     .list-row-thumb { background: #FEE2E2; }
 
 /* ── Upload modal tabs ── */
 .upload-tabs {
@@ -2975,4 +3020,10 @@ body { background: var(--bg-app); color: var(--text-main); }
   .row-actions { gap: 4px; }
   .row-actions .btn-xs { padding: 4px 8px; font-size: 10px; }
   .badge { font-size: 9px; padding: 2px 6px; }
+  /* Thumbnail list row on mobile */
+  .list-row-thumb { width: 48px; height: 48px; min-width: 48px; border-radius: 8px; }
+  .list-row-actions .fc-view-btn { padding: 5px 10px; font-size: 10px; }
+  .list-row-actions .fc-icon-btn { width: 28px; height: 28px; min-width: 28px; }
+  .list-row-actions .fc-icon-btn svg { width: 13px; height: 13px; }
+  .list-tag { font-size: 9px; padding: 2px 6px; }
 }

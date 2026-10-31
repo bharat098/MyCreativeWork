@@ -960,21 +960,29 @@ function fileCard(f) {
 
 function fileListRow(f) {
   const folderName = f.folder_id ? (State.folders.find(fd => fd.id === f.folder_id)?.name || '') : '';
+  const extBadge  = (f.extension || '').toUpperCase();
+  const typeLabel = f.file_type ? (f.file_type.charAt(0).toUpperCase() + f.file_type.slice(1)) : '';
+  const iconMove  = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`;
+  const iconHeart = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="${f.is_favorite?'#EC4899':'none'}" stroke="#EC4899" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>`;
+  const iconTrash = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3,6 5,6 21,6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>`;
   return `
-  <div class="list-row">
-    <div class="list-thumb">${fileTypeIcon(f.file_type)}</div>
-    <div class="list-info">
-      <p class="list-name">${esc(f.original_name)}</p>
-      <p class="list-meta">${formatBytes(f.file_size)} · ${timeAgo(f.created_at)}${folderName ? ` · ${esc(folderName)}` : ''}</p>
+  <div class="list-row" onclick="previewFile('${f.id}')" style="cursor:pointer">
+    <div class="list-row-thumb">${fileThumb(f)}</div>
+    <div class="list-row-info">
+      <p class="list-name">${esc(f.original_name || f.name)}</p>
+      <p class="list-meta">${f.file_size ? formatBytes(f.file_size)+' · ' : ''}${timeAgo(f.created_at)}${folderName ? ' · '+esc(folderName) : ''}</p>
+      <div class="list-row-tags">
+        ${typeLabel ? `<span class="list-tag list-tag-type">${typeLabel}</span>` : ''}
+        ${extBadge  ? `<span class="list-tag list-tag-ext">${extBadge}</span>`  : ''}
+      </div>
     </div>
-    <span class="badge">${esc(f.file_type || 'other')}</span>
-    ${State.isAdmin ? `
-    <div class="row-actions">
-      ${f.file_url ? `<a href="${esc(f.file_url)}" target="_blank" class="btn btn-ghost btn-xs">Open</a>` : ''}
-      <button class="btn btn-ghost btn-xs" onclick="openMoveModal('${f.id}')">Move</button>
-      <button class="btn btn-ghost btn-xs" onclick="toggleFavorite('${f.id}',${f.is_favorite})">${f.is_favorite?'♥':'♡'}</button>
-      <button class="btn btn-danger btn-xs" onclick="trashItem('${f.id}')">Del</button>
-    </div>` : ''}
+    <div class="list-row-actions" onclick="event.stopPropagation()">
+      <button class="btn fc-view-btn list-view-btn" onclick="previewFile('${f.id}')">View</button>
+      ${State.isAdmin ? `
+      <button class="fc-icon-btn" title="Move" onclick="openMoveModal('${f.id}')">${iconMove}</button>
+      <button class="fc-icon-btn fc-fav-btn${f.is_favorite?' active':''}" title="Favorite" onclick="toggleFavorite('${f.id}',${f.is_favorite})">${iconHeart}</button>
+      <button class="fc-icon-btn fc-del-btn" title="Delete" onclick="trashItem('${f.id}')">${iconTrash}</button>` : ''}
+    </div>
   </div>`;
 }
 
