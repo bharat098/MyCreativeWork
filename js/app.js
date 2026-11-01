@@ -48,6 +48,11 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   window.addEventListener('hashchange', () => {
     const raw = location.hash.slice(1) || 'dashboard';
+    // Gate: non-admin must fill name before viewing any page except settings
+    if (!State.isAdmin && !localStorage.getItem(_VNAME) && raw !== 'settings') {
+      history.replaceState(null, '', '#' + (State.view || 'dashboard'));
+      _visitorShowForm(); return;
+    }
     if (raw !== State.view) { State.folderStack = []; State.selectedEvent = null; }
     State.view = raw;
     State.search = '';
@@ -82,11 +87,13 @@ function setAdmin(user) {
   if (av) av.style.display = 'flex';
   document.body.classList.add('is-admin');
   loadProfile();
-  // Hide visitor header/form when admin logs in
+  // Hide visitor header/form, show admin bell
   const vh = document.getElementById('header-visitor');
   if (vh) vh.style.display = 'none';
   const vm = document.getElementById('visitor-modal');
   if (vm) { vm.classList.remove('open'); document.body.style.overflow = ''; }
+  const bell = document.getElementById('admin-bell-wrap');
+  if (bell) bell.style.display = 'flex';
   _visitorStopIdle();
   _visitorSubscribeAdmin();
 }
@@ -100,7 +107,9 @@ function clearAdmin() {
   if (av) av.style.display = 'none';
   document.body.classList.remove('is-admin');
   refreshHeaderAvatar(null);
-  // Re-init visitor flow after admin logout
+  // Hide admin bell, re-init visitor flow
+  const bell2 = document.getElementById('admin-bell-wrap');
+  if (bell2) bell2.style.display = 'none';
   _visitorUnsubscribeAdmin();
   initVisitor();
 }
@@ -151,6 +160,18 @@ function _visitorShowForm() {
   if (vh) vh.style.display = 'none';
   const vm = document.getElementById('visitor-modal');
   if (vm) { vm.classList.add('open'); document.body.style.overflow = 'hidden'; setTimeout(() => document.getElementById('visitor-name-input')?.focus(), 120); }
+}
+
+function visitorGoAdmin() {
+  // Close visitor modal, go to settings page for admin login
+  const vm = document.getElementById('visitor-modal');
+  if (vm) { vm.classList.remove('open'); document.body.style.overflow = ''; }
+  State.view = 'settings';
+  location.hash = 'settings';
+  renderView();
+  updateNavActive();
+  // Open admin login modal after short delay
+  setTimeout(() => openModal('admin-login-modal'), 200);
 }
 
 async function submitVisitorName() {
@@ -228,26 +249,90 @@ async function visitorLogout(silent = false) {
   _visitorShowForm();
 }
 
-// Admin: show current visitors immediately, then poll every 30s for new arrivals
+// Admin: visitor bell + panel
 let _vPollTimer = null;
 let _vSeenIds   = new Set();
 
 async function _visitorSubscribeAdmin() {
   if (!State.isAdmin || _vPollTimer) return;
-  await _visitorPollTick(); // show who's online right now
-  _vPollTimer = setInterval(_visitorPollTick, 30_000);
+  await _visitorRefreshPanel();
+  _vPollTimer = setInterval(_visitorRefreshPanel, 30_000);
 }
 
-async function _visitorPollTick() {
+async function _visitorRefreshPanel() {
   if (!State.isAdmin) return;
-  const { data } = await db.from('visitors').select('id,name,visit_count').eq('is_active', true);
-  (data || []).forEach(r => {
+  // Fetch active visitors + recent offline (last 24h)
+  const { data } = await db.from('visitors')
+    .select('id,name,visit_count,is_active,last_seen')
+    .gte('last_seen', new Date(Date.now() - 24*60*60*1000).toISOString())
+    .order('last_seen', { ascending: false });
+
+  const rows   = data || [];
+  const active = rows.filter(r => r.is_active);
+
+  // Toast for new active visitors since last poll
+  active.forEach(r => {
     if (!_vSeenIds.has(r.id)) {
       _vSeenIds.add(r.id);
       const times = r.visit_count > 1 ? ` (visit #${r.visit_count})` : '';
       toast(`👁️ ${r.name} is viewing${times}`, 'info');
     }
   });
+
+  // Update badge
+  const badge = document.getElementById('admin-bell-badge');
+  if (badge) {
+    badge.textContent = active.length;
+    badge.style.display = active.length > 0 ? 'flex' : 'none';
+  }
+
+  // Update panel online count
+  const onlineEl = document.getElementById('visitor-panel-online');
+  if (onlineEl) onlineEl.textContent = `${active.length} online`;
+
+  // Render panel list
+  const listEl = document.getElementById('visitor-panel-list');
+  if (!listEl) return;
+  if (!rows.length) {
+    listEl.innerHTML = '<p class="visitor-panel-empty">No recent visitors</p>';
+    return;
+  }
+  listEl.innerHTML = rows.map(r => {
+    const color  = _visitorColor(r.name);
+    const status = r.is_active ? '<span class="vp-dot vp-dot-on"></span>' : '<span class="vp-dot vp-dot-off"></span>';
+    const timeAgoStr = _vTimeAgo(r.last_seen);
+    const visits = r.visit_count > 1 ? `<span class="vp-visits">${r.visit_count} visits</span>` : '';
+    return `<div class="vp-row">
+      <div class="vp-avatar" style="background:${color}20;color:${color}">${r.name.charAt(0).toUpperCase()}</div>
+      <div class="vp-info">
+        <span class="vp-name">${esc(r.name)}</span>
+        <span class="vp-meta">${timeAgoStr} ${visits}</span>
+      </div>
+      ${status}
+    </div>`;
+  }).join('');
+}
+
+function _vTimeAgo(ts) {
+  const s = Math.floor((Date.now() - new Date(ts)) / 1000);
+  if (s < 60)  return 'just now';
+  if (s < 3600) return `${Math.floor(s/60)}m ago`;
+  if (s < 86400) return `${Math.floor(s/3600)}h ago`;
+  return `${Math.floor(s/86400)}d ago`;
+}
+
+function toggleVisitorPanel(e) {
+  e.stopPropagation();
+  const panel = document.getElementById('visitor-panel');
+  if (!panel) return;
+  const open = panel.classList.toggle('open');
+  if (open) {
+    // Close on outside click
+    setTimeout(() => document.addEventListener('click', _closeVisitorPanel, { once: true }), 10);
+  }
+}
+function _closeVisitorPanel() {
+  document.getElementById('visitor-panel')?.classList.remove('open');
 }
 
 function _visitorUnsubscribeAdmin() {
@@ -466,7 +551,13 @@ async function loadEvents() {
 }
 
 // ── Router ────────────────────────────────────────────────────
-function navigate(view) { resetFilters(); location.hash = view; closeMobileMenu(); }
+function navigate(view) {
+  // Non-admin must fill name before navigating anywhere except settings
+  if (!State.isAdmin && !localStorage.getItem(_VNAME) && view !== 'settings') {
+    _visitorShowForm(); return;
+  }
+  resetFilters(); location.hash = view; closeMobileMenu();
+}
 function setFilter(key, val) { State[key] = val; renderView(); }
 function resetFilters() { State.filterYear = ''; State.filterMonth = ''; State.filterType = ''; }
 function updateNavActive() {
@@ -2278,7 +2369,7 @@ function closeModal(id) {
   modal.classList.remove('open'); document.body.style.overflow = '';
 }
 document.addEventListener('click', e => {
-  if (e.target.classList.contains('modal-overlay')) closeModal(e.target.id);
+  if (e.target.classList.contains('modal-overlay') && e.target.id !== 'visitor-modal') closeModal(e.target.id);
 });
 
 function confirmAction(title, msg, btnLabel, fn) {
