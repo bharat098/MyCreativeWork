@@ -166,6 +166,7 @@ async function submitVisitorName() {
     input.value = ''; input.disabled = false;
     _visitorShowHeader(name);
     _visitorStartIdle();
+    renderView(); // refresh dashboard greeting with the new name
   } catch(e) {
     input.disabled = false;
   }
@@ -227,23 +228,31 @@ async function visitorLogout(silent = false) {
   _visitorShowForm();
 }
 
-// Admin: real-time visitor notifications
-function _visitorSubscribeAdmin() {
-  if (!State.isAdmin || _vAdminCh) return;
-  _vAdminCh = db.channel('mcw-visitor-notify')
-    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'visitors' }, p => {
-      toast(`👋 ${p.new.name} just joined the workspace`, 'info');
-    })
-    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'visitors' }, p => {
-      if (p.new.is_active && !p.old?.is_active) {
-        const times = p.new.visit_count > 1 ? ` (visit #${p.new.visit_count})` : '';
-        toast(`👁️ ${p.new.name} is now viewing${times}`, 'info');
-      }
-    })
-    .subscribe();
+// Admin: show current visitors immediately, then poll every 30s for new arrivals
+let _vPollTimer = null;
+let _vSeenIds   = new Set();
+
+async function _visitorSubscribeAdmin() {
+  if (!State.isAdmin || _vPollTimer) return;
+  await _visitorPollTick(); // show who's online right now
+  _vPollTimer = setInterval(_visitorPollTick, 30_000);
 }
+
+async function _visitorPollTick() {
+  if (!State.isAdmin) return;
+  const { data } = await db.from('visitors').select('id,name,visit_count').eq('is_active', true);
+  (data || []).forEach(r => {
+    if (!_vSeenIds.has(r.id)) {
+      _vSeenIds.add(r.id);
+      const times = r.visit_count > 1 ? ` (visit #${r.visit_count})` : '';
+      toast(`👁️ ${r.name} is viewing${times}`, 'info');
+    }
+  });
+}
+
 function _visitorUnsubscribeAdmin() {
-  if (_vAdminCh) { db.removeChannel(_vAdminCh); _vAdminCh = null; }
+  if (_vPollTimer) { clearInterval(_vPollTimer); _vPollTimer = null; }
+  _vSeenIds.clear();
 }
 
 // ── Profile helpers ───────────────────────────────────────────
@@ -592,7 +601,10 @@ function renderDashboard() {
   const now = new Date();
   const h = now.getHours();
   const greeting = h < 12 ? 'Good Morning' : h < 18 ? 'Good Afternoon' : 'Good Evening';
-  const welcomeText = isAdmin ? `Welcome back, Bharat! 👋` : `${greeting}! 👋`;
+  const visitorName = !isAdmin ? localStorage.getItem(_VNAME) : null;
+  const welcomeText = isAdmin
+    ? `Welcome back, Bharat! 👋`
+    : visitorName ? `${greeting}, ${visitorName}! 👋` : `${greeting}! 👋`;
   const dateStr = now.toLocaleDateString('en-US', { weekday:'long', year:'numeric', month:'long', day:'numeric' });
   const timeStr = now.toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
 
