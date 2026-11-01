@@ -82,11 +82,11 @@ function setAdmin(user) {
   if (av) av.style.display = 'flex';
   document.body.classList.add('is-admin');
   loadProfile();
-  // Hide visitor header, stop idle timer, subscribe to visitor notifications
+  // Hide visitor header/form when admin logs in
   const vh = document.getElementById('header-visitor');
   if (vh) vh.style.display = 'none';
   const vm = document.getElementById('visitor-modal');
-  if (vm) vm.style.display = 'none';
+  if (vm) { vm.classList.remove('open'); document.body.style.overflow = ''; }
   _visitorStopIdle();
   _visitorSubscribeAdmin();
 }
@@ -150,7 +150,7 @@ function _visitorShowForm() {
   const vh = document.getElementById('header-visitor');
   if (vh) vh.style.display = 'none';
   const vm = document.getElementById('visitor-modal');
-  if (vm) { vm.style.display = 'flex'; setTimeout(() => document.getElementById('visitor-name-input')?.focus(), 120); }
+  if (vm) { vm.classList.add('open'); document.body.style.overflow = 'hidden'; setTimeout(() => document.getElementById('visitor-name-input')?.focus(), 120); }
 }
 
 async function submitVisitorName() {
@@ -161,7 +161,8 @@ async function submitVisitorName() {
   try {
     localStorage.setItem(_VNAME, name);
     await _visitorActivate(name, true);
-    document.getElementById('visitor-modal').style.display = 'none';
+    const vm2 = document.getElementById('visitor-modal');
+    if (vm2) { vm2.classList.remove('open'); document.body.style.overflow = ''; }
     input.value = ''; input.disabled = false;
     _visitorShowHeader(name);
     _visitorStartIdle();
