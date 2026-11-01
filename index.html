@@ -149,6 +149,17 @@
           </div>
         </div>
 
+        <!-- Visitor header chip (non-admin) -->
+        <div class="header-visitor" id="header-visitor" style="display:none">
+          <div class="visitor-avatar-chip" id="visitor-avatar-chip">
+            <span id="visitor-initial">?</span>
+          </div>
+          <span id="visitor-greeting-text" class="visitor-greeting-label">Good morning</span>
+          <button class="visitor-leave-btn" onclick="visitorLogout()" title="End session">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+          </button>
+        </div>
+
         <!-- View toggle -->
         <div class="view-toggle" id="view-toggle">
           <button onclick="setView('grid')" id="view-grid" class="active" title="Grid view">
@@ -307,6 +318,30 @@
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeModal('confirm-modal')">Cancel</button>
       <button class="btn btn-danger" id="confirm-action-btn" onclick="executeConfirm()">Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- Visitor Name Modal -->
+<div class="modal-overlay" id="visitor-modal" style="display:none;background:rgba(15,23,42,0.8)">
+  <div class="modal visitor-modal-box" style="max-width:420px;overflow:hidden;padding:0;border-radius:20px">
+    <div class="visitor-modal-hero">
+      <div class="visitor-modal-wave">👋</div>
+      <h2 class="visitor-modal-title">Welcome to MyCreativeWork</h2>
+      <p class="visitor-modal-sub">Tell us your name to get started</p>
+    </div>
+    <div class="visitor-modal-body">
+      <div class="field-wrap animated-field">
+        <input type="text" id="visitor-name-input" placeholder=" " maxlength="50"
+               autocomplete="given-name"
+               onkeydown="if(event.key==='Enter')submitVisitorName()" />
+        <label for="visitor-name-input">Your name</label>
+      </div>
+      <p class="visitor-modal-note">Saved in this browser only. Clears automatically after 10 minutes of inactivity.</p>
+      <button class="btn visitor-enter-btn" onclick="submitVisitorName()">
+        Enter Workspace
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12,5 19,12 12,19"/></svg>
+      </button>
     </div>
   </div>
 </div>

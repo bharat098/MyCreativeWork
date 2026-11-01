@@ -35,6 +35,10 @@ let _pendingAvatarFile = null;
 
 // ── Bootstrap ────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', async () => {
+  // Set data-view immediately so the loading icon gets the right page colour
+  const _initView = location.hash.slice(1) || 'dashboard';
+  document.getElementById('view-container').dataset.view = _initView;
+
   document.addEventListener('keydown', e => {
     if (e.ctrlKey && e.shiftKey && e.key === 'A') {
       e.preventDefault();
@@ -65,6 +69,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   State.view = hash;
   renderView();
   updateNavActive();
+  initVisitor();
 });
 
 // ── Auth ─────────────────────────────────────────────────────
@@ -77,6 +82,13 @@ function setAdmin(user) {
   if (av) av.style.display = 'flex';
   document.body.classList.add('is-admin');
   loadProfile();
+  // Hide visitor header, stop idle timer, subscribe to visitor notifications
+  const vh = document.getElementById('header-visitor');
+  if (vh) vh.style.display = 'none';
+  const vm = document.getElementById('visitor-modal');
+  if (vm) vm.style.display = 'none';
+  _visitorStopIdle();
+  _visitorSubscribeAdmin();
 }
 function clearAdmin() {
   State.user = null; State.isAdmin = false;
@@ -88,6 +100,149 @@ function clearAdmin() {
   if (av) av.style.display = 'none';
   document.body.classList.remove('is-admin');
   refreshHeaderAvatar(null);
+  // Re-init visitor flow after admin logout
+  _visitorUnsubscribeAdmin();
+  initVisitor();
+}
+
+// ── Visitor Tracking ──────────────────────────────────────────
+const _VID   = 'mcw_visitor_id';
+const _VNAME = 'mcw_visitor_name';
+const _VIDLE = 10 * 60 * 1000; // 10 minutes
+let _vLastAct = Date.now();
+let _vIdleTimer = null;
+let _vAdminCh = null;
+const _VCOLORS = ['#7C3AED','#0D9488','#EC4899','#F97316','#0EA5E9','#10B981','#3B82F6','#EF4444'];
+
+function _visitorBrowserId() {
+  let id = localStorage.getItem(_VID);
+  if (!id) {
+    // Works in all contexts including file://
+    id = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+      const r = Math.random() * 16 | 0;
+      return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+    });
+    localStorage.setItem(_VID, id);
+  }
+  return id;
+}
+function _visitorGreeting() {
+  const h = new Date().getHours();
+  return h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
+}
+function _visitorColor(name) {
+  return _VCOLORS[(name.charCodeAt(0) || 0) % _VCOLORS.length];
+}
+
+async function initVisitor() {
+  if (State.isAdmin) return;
+  const name = localStorage.getItem(_VNAME);
+  if (name) {
+    await _visitorActivate(name, false);
+    _visitorShowHeader(name);
+    _visitorStartIdle();
+  } else {
+    _visitorShowForm();
+  }
+}
+
+function _visitorShowForm() {
+  const vh = document.getElementById('header-visitor');
+  if (vh) vh.style.display = 'none';
+  const vm = document.getElementById('visitor-modal');
+  if (vm) { vm.style.display = 'flex'; setTimeout(() => document.getElementById('visitor-name-input')?.focus(), 120); }
+}
+
+async function submitVisitorName() {
+  const input = document.getElementById('visitor-name-input');
+  const name  = (input?.value || '').trim();
+  if (!name) { input?.focus(); return; }
+  input.disabled = true;
+  try {
+    localStorage.setItem(_VNAME, name);
+    await _visitorActivate(name, true);
+    document.getElementById('visitor-modal').style.display = 'none';
+    input.value = ''; input.disabled = false;
+    _visitorShowHeader(name);
+    _visitorStartIdle();
+  } catch(e) {
+    input.disabled = false;
+  }
+}
+
+async function _visitorActivate(name, newSession) {
+  const bid = _visitorBrowserId();
+  const { data: existing } = await db.from('visitors').select('visit_count').eq('browser_id', bid).maybeSingle();
+  if (existing) {
+    const upd = { name, is_active: true, last_seen: new Date().toISOString() };
+    if (newSession) upd.visit_count = (existing.visit_count || 1) + 1;
+    await db.from('visitors').update(upd).eq('browser_id', bid);
+  } else {
+    await db.from('visitors').insert({ browser_id: bid, name, visit_count: 1, is_active: true });
+  }
+}
+
+function _visitorShowHeader(name) {
+  const el = document.getElementById('header-visitor');
+  if (!el) return;
+  const color = _visitorColor(name);
+  const chip  = document.getElementById('visitor-avatar-chip');
+  if (chip) { chip.style.background = color + '20'; chip.style.color = color; chip.style.borderColor = color + '40'; }
+  const init = document.getElementById('visitor-initial');
+  if (init) { init.textContent = name.charAt(0).toUpperCase(); init.style.color = color; }
+  const greet = document.getElementById('visitor-greeting-text');
+  if (greet) greet.textContent = `${_visitorGreeting()}, ${name}`;
+  el.style.display = 'flex';
+}
+
+function _visitorStartIdle() {
+  _vLastAct = Date.now();
+  document.addEventListener('mousemove', _visitorResetIdle, { passive: true });
+  document.addEventListener('keydown',   _visitorResetIdle, { passive: true });
+  document.addEventListener('click',     _visitorResetIdle, { passive: true });
+  if (_vIdleTimer) clearInterval(_vIdleTimer);
+  _vIdleTimer = setInterval(_visitorCheckIdle, 30_000);
+}
+function _visitorStopIdle() {
+  if (_vIdleTimer) { clearInterval(_vIdleTimer); _vIdleTimer = null; }
+  document.removeEventListener('mousemove', _visitorResetIdle);
+  document.removeEventListener('keydown',   _visitorResetIdle);
+  document.removeEventListener('click',     _visitorResetIdle);
+}
+function _visitorResetIdle() { _vLastAct = Date.now(); }
+function _visitorCheckIdle() {
+  if (Date.now() - _vLastAct > _VIDLE) visitorLogout(true);
+}
+
+async function visitorLogout(silent = false) {
+  _visitorStopIdle();
+  const bid = localStorage.getItem(_VID);
+  if (bid) await db.from('visitors').update({ is_active: false, last_seen: new Date().toISOString() }).eq('browser_id', bid);
+  localStorage.removeItem(_VNAME);
+  const vh = document.getElementById('header-visitor');
+  if (vh) vh.style.display = 'none';
+  if (!silent) toast('Session ended. See you soon!', 'info');
+  else toast('You were logged out after 10 min of inactivity', 'info');
+  _visitorShowForm();
+}
+
+// Admin: real-time visitor notifications
+function _visitorSubscribeAdmin() {
+  if (!State.isAdmin || _vAdminCh) return;
+  _vAdminCh = db.channel('mcw-visitor-notify')
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'visitors' }, p => {
+      toast(`👋 ${p.new.name} just joined the workspace`, 'info');
+    })
+    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'visitors' }, p => {
+      if (p.new.is_active && !p.old?.is_active) {
+        const times = p.new.visit_count > 1 ? ` (visit #${p.new.visit_count})` : '';
+        toast(`👁️ ${p.new.name} is now viewing${times}`, 'info');
+      }
+    })
+    .subscribe();
+}
+function _visitorUnsubscribeAdmin() {
+  if (_vAdminCh) { db.removeChannel(_vAdminCh); _vAdminCh = null; }
 }
 
 // ── Profile helpers ───────────────────────────────────────────
@@ -886,9 +1041,17 @@ function filterControl(pageType) {
 }
 
 function fileGrid(list) {
-  return State.viewMode === 'list'
-    ? `<div class="list-view">${list.map(fileListRow).join('')}</div>`
-    : `<div class="file-grid stagger">${list.map(fileCard).join('')}</div>`;
+  if (State.viewMode === 'list') {
+    const header = `<div class="list-header">
+      <div class="list-header-thumb"></div>
+      <div class="list-header-col">File</div>
+      <div class="list-header-col">Uploaded</div>
+      <div class="list-header-col">Size</div>
+      <div class="list-header-col list-header-actions">Actions</div>
+    </div>`;
+    return `<div class="list-view">${header}${list.map(fileListRow).join('')}</div>`;
+  }
+  return `<div class="file-grid stagger">${list.map(fileCard).join('')}</div>`;
 }
 
 function titleColor(str) {
@@ -962,6 +1125,8 @@ function fileListRow(f) {
   const folderName = f.folder_id ? (State.folders.find(fd => fd.id === f.folder_id)?.name || '') : '';
   const extBadge  = (f.extension || '').toUpperCase();
   const typeLabel = f.file_type ? (f.file_type.charAt(0).toUpperCase() + f.file_type.slice(1)) : '';
+  const sizeStr   = f.file_size ? formatBytes(f.file_size) : '—';
+  const dateStr   = timeAgo(f.created_at);
   const iconMove  = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`;
   const iconHeart = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="${f.is_favorite?'#EC4899':'none'}" stroke="#EC4899" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>`;
   const iconTrash = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3,6 5,6 21,6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>`;
@@ -970,12 +1135,17 @@ function fileListRow(f) {
     <div class="list-row-thumb">${fileThumb(f)}</div>
     <div class="list-row-info">
       <p class="list-name">${esc(f.original_name || f.name)}</p>
-      <p class="list-meta">${f.file_size ? formatBytes(f.file_size)+' · ' : ''}${timeAgo(f.created_at)}${folderName ? ' · '+esc(folderName) : ''}</p>
+      <p class="list-meta list-meta-mobile">${sizeStr} · ${dateStr}${folderName ? ' · '+esc(folderName) : ''}</p>
       <div class="list-row-tags">
         ${typeLabel ? `<span class="list-tag list-tag-type">${typeLabel}</span>` : ''}
         ${extBadge  ? `<span class="list-tag list-tag-ext">${extBadge}</span>`  : ''}
       </div>
     </div>
+    <div class="list-row-col list-row-date">
+      ${dateStr}
+      ${folderName ? `<span class="list-row-folder">${esc(folderName)}</span>` : ''}
+    </div>
+    <div class="list-row-col list-row-size">${sizeStr}</div>
     <div class="list-row-actions" onclick="event.stopPropagation()">
       <button class="btn fc-view-btn list-view-btn" onclick="previewFile('${f.id}')">View</button>
       ${State.isAdmin ? `

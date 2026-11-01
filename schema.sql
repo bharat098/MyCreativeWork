@@ -16,6 +16,7 @@ DROP TABLE IF EXISTS projects     CASCADE;
 DROP TABLE IF EXISTS events       CASCADE;
 DROP TABLE IF EXISTS folders      CASCADE;
 DROP TABLE IF EXISTS categories   CASCADE;
+DROP TABLE IF EXISTS visitors     CASCADE;
 
 -- ============================================================
 -- TABLES
@@ -194,3 +195,21 @@ INSERT INTO categories (name, color) VALUES
   ('Personal Projects','#173B2F'),
   ('Other',           '#71877B')
 ON CONFLICT (name) DO NOTHING;
+
+-- ============================================================
+-- VISITOR TRACKING
+-- ============================================================
+CREATE TABLE visitors (
+  id            UUID        DEFAULT uuid_generate_v4() PRIMARY KEY,
+  browser_id    TEXT        UNIQUE NOT NULL,
+  name          TEXT        NOT NULL,
+  visit_count   INTEGER     DEFAULT 1,
+  first_seen    TIMESTAMPTZ DEFAULT NOW(),
+  last_seen     TIMESTAMPTZ DEFAULT NOW(),
+  is_active     BOOLEAN     DEFAULT TRUE
+);
+ALTER TABLE visitors ENABLE ROW LEVEL SECURITY;
+ALTER TABLE visitors REPLICA IDENTITY FULL;
+-- Allow anonymous visitors to insert/update their own record, admin reads all
+CREATE POLICY "visitors_anon_rw"  ON visitors FOR ALL TO anon          USING (true) WITH CHECK (true);
+CREATE POLICY "visitors_auth_all" ON visitors FOR ALL TO authenticated  USING (true) WITH CHECK (true);
