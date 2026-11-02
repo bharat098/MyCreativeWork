@@ -48,11 +48,6 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   window.addEventListener('hashchange', () => {
     const raw = location.hash.slice(1) || 'dashboard';
-    // Gate: non-admin must fill name before viewing any page except settings
-    if (!State.isAdmin && !localStorage.getItem(_VNAME) && raw !== 'settings') {
-      history.replaceState(null, '', '#' + (State.view || 'dashboard'));
-      _visitorShowForm(); return;
-    }
     if (raw !== State.view) { State.folderStack = []; State.selectedEvent = null; }
     State.view = raw;
     State.search = '';
@@ -74,7 +69,6 @@ window.addEventListener('DOMContentLoaded', async () => {
   State.view = hash;
   renderView();
   updateNavActive();
-  initVisitor();
 });
 
 // ── Auth ─────────────────────────────────────────────────────
@@ -87,15 +81,6 @@ function setAdmin(user) {
   if (av) av.style.display = 'flex';
   document.body.classList.add('is-admin');
   loadProfile();
-  // Hide visitor header/form, show admin bell
-  const vh = document.getElementById('header-visitor');
-  if (vh) vh.style.display = 'none';
-  const vm = document.getElementById('visitor-modal');
-  if (vm) { vm.classList.remove('open'); document.body.style.overflow = ''; }
-  const bell = document.getElementById('admin-bell-wrap');
-  if (bell) bell.style.display = 'flex';
-  _visitorStopIdle();
-  _visitorSubscribeAdmin();
 }
 function clearAdmin() {
   State.user = null; State.isAdmin = false;
@@ -107,237 +92,6 @@ function clearAdmin() {
   if (av) av.style.display = 'none';
   document.body.classList.remove('is-admin');
   refreshHeaderAvatar(null);
-  // Hide admin bell, re-init visitor flow
-  const bell2 = document.getElementById('admin-bell-wrap');
-  if (bell2) bell2.style.display = 'none';
-  _visitorUnsubscribeAdmin();
-  initVisitor();
-}
-
-// ── Visitor Tracking ──────────────────────────────────────────
-const _VID   = 'mcw_visitor_id';
-const _VNAME = 'mcw_visitor_name';
-const _VIDLE = 10 * 60 * 1000; // 10 minutes
-let _vLastAct = Date.now();
-let _vIdleTimer = null;
-let _vAdminCh = null;
-const _VCOLORS = ['#7C3AED','#0D9488','#EC4899','#F97316','#0EA5E9','#10B981','#3B82F6','#EF4444'];
-
-function _visitorBrowserId() {
-  let id = localStorage.getItem(_VID);
-  if (!id) {
-    // Works in all contexts including file://
-    id = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
-      const r = Math.random() * 16 | 0;
-      return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
-    });
-    localStorage.setItem(_VID, id);
-  }
-  return id;
-}
-function _visitorGreeting() {
-  const h = new Date().getHours();
-  return h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
-}
-function _visitorColor(name) {
-  return _VCOLORS[(name.charCodeAt(0) || 0) % _VCOLORS.length];
-}
-
-async function initVisitor() {
-  if (State.isAdmin) return;
-  const name = localStorage.getItem(_VNAME);
-  if (name) {
-    await _visitorActivate(name, false);
-    _visitorShowHeader(name);
-    _visitorStartIdle();
-  } else {
-    _visitorShowForm();
-  }
-}
-
-function _visitorShowForm() {
-  const vh = document.getElementById('header-visitor');
-  if (vh) vh.style.display = 'none';
-  const vm = document.getElementById('visitor-modal');
-  if (vm) { vm.classList.add('open'); document.body.style.overflow = 'hidden'; setTimeout(() => document.getElementById('visitor-name-input')?.focus(), 120); }
-}
-
-function visitorGoAdmin() {
-  // Close visitor modal, go to settings page for admin login
-  const vm = document.getElementById('visitor-modal');
-  if (vm) { vm.classList.remove('open'); document.body.style.overflow = ''; }
-  State.view = 'settings';
-  location.hash = 'settings';
-  renderView();
-  updateNavActive();
-  // Open admin login modal after short delay
-  setTimeout(() => openModal('admin-login-modal'), 200);
-}
-
-async function submitVisitorName() {
-  const input = document.getElementById('visitor-name-input');
-  const name  = (input?.value || '').trim();
-  if (!name) { input?.focus(); return; }
-  input.disabled = true;
-  try {
-    localStorage.setItem(_VNAME, name);
-    await _visitorActivate(name, true);
-    const vm2 = document.getElementById('visitor-modal');
-    if (vm2) { vm2.classList.remove('open'); document.body.style.overflow = ''; }
-    input.value = ''; input.disabled = false;
-    _visitorShowHeader(name);
-    _visitorStartIdle();
-    renderView(); // refresh dashboard greeting with the new name
-  } catch(e) {
-    input.disabled = false;
-  }
-}
-
-async function _visitorActivate(name, newSession) {
-  const bid = _visitorBrowserId();
-  const { data: existing } = await db.from('visitors').select('visit_count').eq('browser_id', bid).maybeSingle();
-  if (existing) {
-    const upd = { name, is_active: true, last_seen: new Date().toISOString() };
-    if (newSession) upd.visit_count = (existing.visit_count || 1) + 1;
-    await db.from('visitors').update(upd).eq('browser_id', bid);
-  } else {
-    await db.from('visitors').insert({ browser_id: bid, name, visit_count: 1, is_active: true });
-  }
-}
-
-function _visitorShowHeader(name) {
-  const el = document.getElementById('header-visitor');
-  if (!el) return;
-  const color = _visitorColor(name);
-  const chip  = document.getElementById('visitor-avatar-chip');
-  if (chip) { chip.style.background = color + '20'; chip.style.color = color; chip.style.borderColor = color + '40'; }
-  const init = document.getElementById('visitor-initial');
-  if (init) { init.textContent = name.charAt(0).toUpperCase(); init.style.color = color; }
-  const greet = document.getElementById('visitor-greeting-text');
-  if (greet) greet.textContent = `${_visitorGreeting()}, ${name}`;
-  el.style.display = 'flex';
-}
-
-function _visitorStartIdle() {
-  _vLastAct = Date.now();
-  document.addEventListener('mousemove', _visitorResetIdle, { passive: true });
-  document.addEventListener('keydown',   _visitorResetIdle, { passive: true });
-  document.addEventListener('click',     _visitorResetIdle, { passive: true });
-  if (_vIdleTimer) clearInterval(_vIdleTimer);
-  _vIdleTimer = setInterval(_visitorCheckIdle, 30_000);
-}
-function _visitorStopIdle() {
-  if (_vIdleTimer) { clearInterval(_vIdleTimer); _vIdleTimer = null; }
-  document.removeEventListener('mousemove', _visitorResetIdle);
-  document.removeEventListener('keydown',   _visitorResetIdle);
-  document.removeEventListener('click',     _visitorResetIdle);
-}
-function _visitorResetIdle() { _vLastAct = Date.now(); }
-function _visitorCheckIdle() {
-  if (Date.now() - _vLastAct > _VIDLE) visitorLogout(true);
-}
-
-async function visitorLogout(silent = false) {
-  _visitorStopIdle();
-  const bid = localStorage.getItem(_VID);
-  if (bid) await db.from('visitors').update({ is_active: false, last_seen: new Date().toISOString() }).eq('browser_id', bid);
-  localStorage.removeItem(_VNAME);
-  const vh = document.getElementById('header-visitor');
-  if (vh) vh.style.display = 'none';
-  if (!silent) toast('Session ended. See you soon!', 'info');
-  else toast('You were logged out after 10 min of inactivity', 'info');
-  _visitorShowForm();
-}
-
-// Admin: visitor bell + panel
-let _vPollTimer = null;
-let _vSeenIds   = new Set();
-
-async function _visitorSubscribeAdmin() {
-  if (!State.isAdmin || _vPollTimer) return;
-  await _visitorRefreshPanel();
-  _vPollTimer = setInterval(_visitorRefreshPanel, 30_000);
-}
-
-async function _visitorRefreshPanel() {
-  if (!State.isAdmin) return;
-  // Fetch active visitors + recent offline (last 24h)
-  const { data } = await db.from('visitors')
-    .select('id,name,visit_count,is_active,last_seen')
-    .gte('last_seen', new Date(Date.now() - 24*60*60*1000).toISOString())
-    .order('last_seen', { ascending: false });
-
-  const rows   = data || [];
-  const active = rows.filter(r => r.is_active);
-
-  // Toast for new active visitors since last poll
-  active.forEach(r => {
-    if (!_vSeenIds.has(r.id)) {
-      _vSeenIds.add(r.id);
-      const times = r.visit_count > 1 ? ` (visit #${r.visit_count})` : '';
-      toast(`👁️ ${r.name} is viewing${times}`, 'info');
-    }
-  });
-
-  // Update badge
-  const badge = document.getElementById('admin-bell-badge');
-  if (badge) {
-    badge.textContent = active.length;
-    badge.style.display = active.length > 0 ? 'flex' : 'none';
-  }
-
-  // Update panel online count
-  const onlineEl = document.getElementById('visitor-panel-online');
-  if (onlineEl) onlineEl.textContent = `${active.length} online`;
-
-  // Render panel list
-  const listEl = document.getElementById('visitor-panel-list');
-  if (!listEl) return;
-  if (!rows.length) {
-    listEl.innerHTML = '<p class="visitor-panel-empty">No recent visitors</p>';
-    return;
-  }
-  listEl.innerHTML = rows.map(r => {
-    const color  = _visitorColor(r.name);
-    const status = r.is_active ? '<span class="vp-dot vp-dot-on"></span>' : '<span class="vp-dot vp-dot-off"></span>';
-    const timeAgoStr = _vTimeAgo(r.last_seen);
-    const visits = r.visit_count > 1 ? `<span class="vp-visits">${r.visit_count} visits</span>` : '';
-    return `<div class="vp-row">
-      <div class="vp-avatar" style="background:${color}20;color:${color}">${r.name.charAt(0).toUpperCase()}</div>
-      <div class="vp-info">
-        <span class="vp-name">${esc(r.name)}</span>
-        <span class="vp-meta">${timeAgoStr} ${visits}</span>
-      </div>
-      ${status}
-    </div>`;
-  }).join('');
-}
-
-function _vTimeAgo(ts) {
-  const s = Math.floor((Date.now() - new Date(ts)) / 1000);
-  if (s < 60)  return 'just now';
-  if (s < 3600) return `${Math.floor(s/60)}m ago`;
-  if (s < 86400) return `${Math.floor(s/3600)}h ago`;
-  return `${Math.floor(s/86400)}d ago`;
-}
-
-function toggleVisitorPanel(e) {
-  e.stopPropagation();
-  const panel = document.getElementById('visitor-panel');
-  if (!panel) return;
-  const open = panel.classList.toggle('open');
-  if (open) {
-    // Close on outside click
-    setTimeout(() => document.addEventListener('click', _closeVisitorPanel, { once: true }), 10);
-  }
-}
-function _closeVisitorPanel() {
-  document.getElementById('visitor-panel')?.classList.remove('open');
-}
-
-function _visitorUnsubscribeAdmin() {
-  if (_vPollTimer) { clearInterval(_vPollTimer); _vPollTimer = null; }
-  _vSeenIds.clear();
 }
 
 // ── Profile helpers ───────────────────────────────────────────
@@ -541,6 +295,10 @@ async function loadFolders() {
   const { data } = await db.from('folders').select('*').eq('is_deleted', false).order('name');
   State.folders = data || [];
 }
+function folderLogoOf(fid) {
+  if (!fid) return '';
+  return State.folders.find(f => f.id === fid)?.logo_url || '';
+}
 async function loadFiles() {
   const { data } = await db.from('files').select('*').eq('is_deleted', false).order('created_at', { ascending: false });
   State.files = data || [];
@@ -551,13 +309,7 @@ async function loadEvents() {
 }
 
 // ── Router ────────────────────────────────────────────────────
-function navigate(view) {
-  // Non-admin must fill name before navigating anywhere except settings
-  if (!State.isAdmin && !localStorage.getItem(_VNAME) && view !== 'settings') {
-    _visitorShowForm(); return;
-  }
-  resetFilters(); location.hash = view; closeMobileMenu();
-}
+function navigate(view) { resetFilters(); location.hash = view; closeMobileMenu(); }
 function setFilter(key, val) { State[key] = val; renderView(); }
 function resetFilters() { State.filterYear = ''; State.filterMonth = ''; State.filterType = ''; }
 function updateNavActive() {
@@ -692,10 +444,7 @@ function renderDashboard() {
   const now = new Date();
   const h = now.getHours();
   const greeting = h < 12 ? 'Good Morning' : h < 18 ? 'Good Afternoon' : 'Good Evening';
-  const visitorName = !isAdmin ? localStorage.getItem(_VNAME) : null;
-  const welcomeText = isAdmin
-    ? `Welcome back, Bharat! 👋`
-    : visitorName ? `${greeting}, ${visitorName}! 👋` : `${greeting}! 👋`;
+  const welcomeText = isAdmin ? `Welcome back, Bharat! 👋` : `${greeting}! 👋`;
   const dateStr = now.toLocaleDateString('en-US', { weekday:'long', year:'numeric', month:'long', day:'numeric' });
   const timeStr = now.toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
 
@@ -917,7 +666,7 @@ function renderFolders() {
     return `
     <div class="folder-card-v2">
       <div class="folder-card-main" onclick="enterFolder('${f.id}','${esc(f.name)}')">
-        <div class="folder-icon">${folderIcon()}</div>
+        <div class="folder-icon${f.logo_url ? ' folder-icon-logo' : ''}">${f.logo_url ? `<img src="${f.logo_url}" alt="${esc(f.name)}" />` : folderIcon()}</div>
         <div class="folder-info">
           <h4>${esc(f.name)}</h4>
           <p>${fc} file${fc!==1?'s':''}${subs.length ? ` · ${subs.length} sub-folder${subs.length!==1?'s':''}` : ''}</p>
@@ -938,7 +687,7 @@ function renderFolders() {
     const fc   = fileCount(f.id);
     return `
     <div class="list-row" onclick="enterFolder('${f.id}','${esc(f.name)}')">
-      <div class="list-thumb" style="color:var(--green)">${folderIcon()}</div>
+      <div class="list-thumb${f.logo_url ? ' list-thumb-logo' : ''}" style="${f.logo_url ? '' : 'color:var(--green)'}">${f.logo_url ? `<img src="${f.logo_url}" alt="${esc(f.name)}" style="width:100%;height:100%;object-fit:contain;border-radius:8px;padding:2px;background:#fff" />` : folderIcon()}</div>
       <div class="list-info">
         <p class="list-name">${esc(f.name)}</p>
         <p class="list-meta">${fc} file${fc!==1?'s':''}${subs.length ? ` · ${subs.length} sub-folders` : ''}${f.description ? ` · ${esc(f.description)}` : ''}</p>
@@ -1202,9 +951,12 @@ function fileThumb(f) {
 
 function fileCard(f) {
   const extBadge = (f.extension||'').toUpperCase();
+  const folderLogo = folderLogoOf(f.folder_id);
+  const folderName = f.folder_id ? (State.folders.find(fd => fd.id === f.folder_id)?.name || '') : '';
   const iconMove = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`;
   const iconHeart = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="${f.is_favorite?'#EC4899':'none'}" stroke="#EC4899" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>`;
   const iconTrash = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3,6 5,6 21,6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>`;
+  const logoBadge = folderLogo ? `<img class="fc-folder-badge" src="${folderLogo}" alt="${esc(folderName)}" title="${esc(folderName)}" />` : '';
   return `
   <div class="file-card">
     <div class="file-thumb" onclick="previewFile('${f.id}')" style="cursor:pointer" title="Preview">
@@ -1214,12 +966,14 @@ function fileCard(f) {
     <p class="file-meta">${f.file_size ? formatBytes(f.file_size)+' · ' : ''}${extBadge}</p>
     ${State.isAdmin ? `
     <div class="file-card-actions">
+      ${logoBadge}
       <button class="btn btn-xs fc-view-btn" onclick="previewFile('${f.id}')">View</button>
       <button class="fc-icon-btn" title="Move" onclick="openMoveModal('${f.id}')">${iconMove}</button>
       <button class="fc-icon-btn fc-fav-btn${f.is_favorite?' active':''}" title="${f.is_favorite?'Unfavorite':'Favorite'}" onclick="toggleFavorite('${f.id}',${f.is_favorite})">${iconHeart}</button>
       <button class="fc-icon-btn fc-del-btn" title="Delete" onclick="trashItem('${f.id}')">${iconTrash}</button>
     </div>` : `
     <div class="file-card-actions">
+      ${logoBadge}
       <button class="btn btn-xs fc-view-btn" onclick="previewFile('${f.id}')">View</button>
     </div>`}
   </div>`;
@@ -1227,6 +981,7 @@ function fileCard(f) {
 
 function fileListRow(f) {
   const folderName = f.folder_id ? (State.folders.find(fd => fd.id === f.folder_id)?.name || '') : '';
+  const folderLogo = folderLogoOf(f.folder_id);
   const extBadge  = (f.extension || '').toUpperCase();
   const typeLabel = f.file_type ? (f.file_type.charAt(0).toUpperCase() + f.file_type.slice(1)) : '';
   const sizeStr   = f.file_size ? formatBytes(f.file_size) : '—';
@@ -1234,6 +989,7 @@ function fileListRow(f) {
   const iconMove  = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`;
   const iconHeart = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="${f.is_favorite?'#EC4899':'none'}" stroke="#EC4899" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>`;
   const iconTrash = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3,6 5,6 21,6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>`;
+  const logoBadge = folderLogo ? `<img class="list-folder-badge" src="${folderLogo}" alt="${esc(folderName)}" title="${esc(folderName)}" />` : '';
   return `
   <div class="list-row" onclick="previewFile('${f.id}')" style="cursor:pointer">
     <div class="list-row-thumb">${fileThumb(f)}</div>
@@ -1247,10 +1003,11 @@ function fileListRow(f) {
     </div>
     <div class="list-row-col list-row-date">
       ${dateStr}
-      ${folderName ? `<span class="list-row-folder">${esc(folderName)}</span>` : ''}
+      ${folderName ? `<span class="list-row-folder">${folderLogo ? `<img class="folder-name-logo" src="${folderLogo}" alt="" />` : ''}${esc(folderName)}</span>` : ''}
     </div>
     <div class="list-row-col list-row-size">${sizeStr}</div>
     <div class="list-row-actions" onclick="event.stopPropagation()">
+      ${logoBadge}
       <button class="btn fc-view-btn list-view-btn" onclick="previewFile('${f.id}')">View</button>
       ${State.isAdmin ? `
       <button class="fc-icon-btn" title="Move" onclick="openMoveModal('${f.id}')">${iconMove}</button>
@@ -1847,10 +1604,44 @@ async function emptyTrash() {
 }
 
 // ── CRUD: Folders ─────────────────────────────────────────────
+function previewFolderLogo(input) {
+  if (!input.files || !input.files[0]) return;
+  const url = URL.createObjectURL(input.files[0]);
+  const preview     = document.getElementById('folder-logo-preview');
+  const placeholder = document.getElementById('folder-logo-placeholder');
+  const clear       = document.getElementById('folder-logo-clear');
+  if (preview)     { preview.src = url; preview.style.display = 'block'; }
+  if (placeholder) placeholder.style.display = 'none';
+  if (clear)       clear.style.display = 'flex';
+}
+
+function clearFolderLogo() {
+  const input = document.getElementById('f-logo-input');
+  if (input) { input.value = ''; input.dataset.existingUrl = ''; }
+  const preview     = document.getElementById('folder-logo-preview');
+  const placeholder = document.getElementById('folder-logo-placeholder');
+  const clear       = document.getElementById('folder-logo-clear');
+  if (preview)     { preview.src = ''; preview.style.display = 'none'; }
+  if (placeholder) placeholder.style.display = 'flex';
+  if (clear)       clear.style.display = 'none';
+}
+
 async function saveFolder() {
-  const id       = document.getElementById('folder-edit-id').value;
-  const name     = document.getElementById('f-name').value.trim();
+  const id   = document.getElementById('folder-edit-id').value;
+  const name = document.getElementById('f-name').value.trim();
   if (!name) { toast('Folder name is required', 'error'); return; }
+
+  const logoInput = document.getElementById('f-logo-input');
+  let logo_url = logoInput?.dataset.existingUrl || null;
+  if (logoInput?.files?.[0]) {
+    const file = logoInput.files[0];
+    const ext  = file.name.split('.').pop();
+    const path = `folder-logos/${Date.now()}.${ext}`;
+    const { error: upErr } = await db.storage.from('thumbnails').upload(path, file, { upsert: true });
+    if (upErr) { toast('Logo upload failed: ' + upErr.message, 'error'); return; }
+    ({ data: { publicUrl: logo_url } } = db.storage.from('thumbnails').getPublicUrl(path));
+  }
+
   const parentId   = document.getElementById('f-parent').value || null;
   const parentPath = parentId ? State.folders.find(f => f.id === parentId)?.path || '' : '';
   const data = {
@@ -1859,6 +1650,7 @@ async function saveFolder() {
     parent_id:   parentId,
     path:        `${parentPath}/${name}`,
     event_id:    document.getElementById('f-event')?.value || null,
+    logo_url:    logo_url || null,
   };
   let err;
   if (id) ({ error: err } = await db.from('folders').update(data).eq('id', id));
@@ -1878,6 +1670,18 @@ function editFolder(id) {
   document.getElementById('folder-edit-id').value = id;
   document.getElementById('f-name').value         = f.name || '';
   document.getElementById('f-desc').value         = f.description || '';
+  const logoInput = document.getElementById('f-logo-input');
+  if (logoInput) { logoInput.value = ''; logoInput.dataset.existingUrl = f.logo_url || ''; }
+  if (f.logo_url) {
+    const preview     = document.getElementById('folder-logo-preview');
+    const placeholder = document.getElementById('folder-logo-placeholder');
+    const clear       = document.getElementById('folder-logo-clear');
+    if (preview)     { preview.src = f.logo_url; preview.style.display = 'block'; }
+    if (placeholder) placeholder.style.display = 'none';
+    if (clear)       clear.style.display = 'flex';
+  } else {
+    clearFolderLogo();
+  }
   setTimeout(() => {
     const p = document.getElementById('f-parent'); if (p) p.value = f.parent_id || '';
     const e = document.getElementById('f-event');  if (e) e.value = f.event_id  || '';
@@ -2195,6 +1999,18 @@ function injectFolderModal() {
           <select id="f-event"><option value="">No event</option></select>
           <label for="f-event">Link to Event (optional)</label>
         </div>
+        <div class="folder-logo-row">
+          <span class="folder-logo-label">Folder Logo</span>
+          <div class="folder-logo-upload" id="folder-logo-wrap" onclick="document.getElementById('f-logo-input').click()" title="Click to upload a logo">
+            <img id="folder-logo-preview" src="" alt="" style="display:none" />
+            <div id="folder-logo-placeholder">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width:22px;height:22px;color:#9CA3AF"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21,15 16,10 5,21"/></svg>
+              <span>Upload logo</span>
+            </div>
+            <button type="button" class="folder-logo-clear" id="folder-logo-clear" onclick="event.stopPropagation();clearFolderLogo()" style="display:none" title="Remove logo">&#10005;</button>
+          </div>
+        </div>
+        <input type="file" id="f-logo-input" accept="image/*" style="display:none" onchange="previewFolderLogo(this)" />
       </div>
       <div class="modal-footer">
         <button class="btn btn-ghost" onclick="closeModal('folder-modal')">Cancel</button>
@@ -2324,6 +2140,8 @@ function openModal(id) {
     document.getElementById('folder-edit-id').value = '';
     document.getElementById('f-name').value = '';
     document.getElementById('f-desc').value = '';
+    clearFolderLogo();
+    const li = document.getElementById('f-logo-input'); if (li) li.dataset.existingUrl = '';
     populateFolderSelects();
     setTimeout(() => {
       const fe = document.getElementById('f-event'); if (fe) fe.value = '';
@@ -2369,7 +2187,7 @@ function closeModal(id) {
   modal.classList.remove('open'); document.body.style.overflow = '';
 }
 document.addEventListener('click', e => {
-  if (e.target.classList.contains('modal-overlay') && e.target.id !== 'visitor-modal') closeModal(e.target.id);
+  if (e.target.classList.contains('modal-overlay')) closeModal(e.target.id);
 });
 
 function confirmAction(title, msg, btnLabel, fn) {
