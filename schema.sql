@@ -64,7 +64,7 @@ CREATE TABLE files (
   file_url      TEXT,
   file_size     BIGINT DEFAULT 0,
   mime_type     TEXT,
-  file_type     TEXT CHECK (file_type IN ('video','image','document','archive','design','other')),
+  file_type     TEXT CHECK (file_type IN ('video','image','document','banner','design','deck')),
   extension     TEXT,
   folder_id     UUID REFERENCES folders(id),
   event_id      UUID REFERENCES events(id),
@@ -237,6 +237,6 @@ INSERT INTO impact_defaults (file_type, default_hours) VALUES
   ('image',    0.5),
   ('document', 1),
   ('design',   2),
-  ('archive',  0.5),
-  ('other',    1)
+  ('banner',   0.5),
+  ('deck',     1)
 ON CONFLICT (file_type) DO NOTHING;

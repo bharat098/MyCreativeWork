@@ -635,7 +635,7 @@ function renderDashboard() {
   // Files by type counts
   const typeMap = { video: 0, image: 0, document: 0, audio: 0, other: 0 };
   State.files.forEach(f => {
-    const t = f.file_type || 'other';
+    const t = f.file_type || 'deck';
     if (typeMap[t] !== undefined) typeMap[t]++;
     else typeMap.other++;
   });
@@ -644,7 +644,7 @@ function renderDashboard() {
     { key: 'image',    label: 'Images',    color: '#EC4899' },
     { key: 'document', label: 'Documents', color: '#10B981' },
     { key: 'audio',    label: 'Audio',     color: '#F97316' },
-    { key: 'other',    label: 'Others',    color: '#7C3AED' },
+    { key: 'deck',     label: 'Decks',     color: '#4338CA' },
   ];
 
   // Donut chart SVG
@@ -1162,7 +1162,8 @@ function filterControl(pageType) {
     <option value="video" ${State.filterType==='video'?'selected':''}>Videos</option>
     <option value="image" ${State.filterType==='image'?'selected':''}>Photos</option>
     <option value="document" ${State.filterType==='document'?'selected':''}>Documents</option>
-    <option value="other" ${State.filterType==='other'?'selected':''}>Other</option>
+    <option value="deck" ${State.filterType==='deck'?'selected':''}>Deck</option>
+    <option value="banner" ${State.filterType==='banner'?'selected':''}>Banner</option>
   </select>`;
   if (pageType === 'year-month') return yearSel + monthSel;
   if (pageType === 'type')       return typeSel;
@@ -2240,9 +2241,9 @@ function guessFileType(mime, ext) {
   if (mime.startsWith('video/') || ['mp4','mov','avi','mkv','webm','mxf','m4v'].includes(ext)) return 'video';
   if (mime.startsWith('image/') || ['jpg','jpeg','png','gif','webp','svg','tif','tiff','heic'].includes(ext)) return 'image';
   if (['pdf'].includes(ext)) return 'document';
-  if (['zip','rar','7z','tar','gz'].includes(ext)) return 'archive';
+  if (['zip','rar','7z','tar','gz'].includes(ext)) return 'banner';
   if (['psd','ai','sketch','fig','xd','aep','prproj','mogrt','c4d'].includes(ext)) return 'design';
-  return 'other';
+  return 'deck';
 }
 
 // ── Selects ───────────────────────────────────────────────────
