@@ -26,6 +26,8 @@ const State = {
   filterYear: '',
   filterMonth: '',
   filterType: '',
+  impactDefaults: [],
+  decks: [],
 };
 
 // active settings tab — persists during the session
@@ -60,10 +62,11 @@ window.addEventListener('DOMContentLoaded', async () => {
   if (session) setAdmin(session.user);
   db.auth.onAuthStateChange((_e, s) => { if (s) setAdmin(s.user); else clearAdmin(); });
 
-  await Promise.all([loadCategories(), loadFolders(), loadFiles(), loadEvents()]);
+  await Promise.all([loadCategories(), loadFolders(), loadFiles(), loadEvents(), loadImpactDefaults(), loadDecks()]);
   populateFolderSelects();
   injectFolderModal();
   injectEventModal();
+  injectDeckModal();
 
   const hash = location.hash.slice(1) || 'dashboard';
   State.view = hash;
@@ -299,6 +302,260 @@ function folderLogoOf(fid) {
   if (!fid) return '';
   return State.folders.find(f => f.id === fid)?.logo_url || '';
 }
+
+// ── Impact ────────────────────────────────────────────────────
+function renderImpact() {
+  const isAdmin = State.isAdmin;
+  const defaults = {};
+  State.impactDefaults.forEach(d => { defaults[d.file_type] = d.default_hours; });
+  const effectiveHours = f => f.time_spent != null ? f.time_spent : (defaults[f.file_type] ?? 1);
+
+  const totalFiles  = State.files.length;
+  const totalHours  = State.files.reduce((s, f) => s + effectiveHours(f), 0);
+  const totalDays   = (totalHours / 8).toFixed(1);
+  const totalVideos = State.files.filter(f => f.file_type === 'video').length;
+
+  const eventMap = {};
+  State.files.forEach(f => {
+    if (!f.event_id) return;
+    const ev = State.events.find(e => e.id === f.event_id);
+    if (!ev) return;
+    if (!eventMap[f.event_id]) eventMap[f.event_id] = { name: ev.name, hours: 0, count: 0 };
+    eventMap[f.event_id].hours += effectiveHours(f);
+    eventMap[f.event_id].count++;
+  });
+  const eventBreakdown = Object.values(eventMap).sort((a, b) => b.hours - a.hours);
+
+  const iStatCard = (label, value, sub, icon) => `
+    <div class="impact-stat-card">
+      <div class="impact-stat-icon">${icon}</div>
+      <div class="impact-stat-body">
+        <p class="impact-stat-val">${value}</p>
+        <p class="impact-stat-label">${label}</p>
+        ${sub ? `<p class="impact-stat-sub">${sub}</p>` : ''}
+      </div>
+    </div>`;
+
+  const hoursIcon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12,6 12,12 16,14"/></svg>`;
+  const daysIcon  = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>`;
+  const filesIcon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z"/><polyline points="14,2 14,8 20,8"/></svg>`;
+  const videoIcon2= `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>`;
+
+  const defaultsTable = isAdmin ? `
+    <div class="impact-section">
+      <h3 class="impact-section-title">Default Hours per File Type</h3>
+      <p class="impact-section-sub">These are applied to files with no individual time set. Change the value and click Save.</p>
+      <div class="impact-defaults-grid">
+        ${State.impactDefaults.map(d => `
+        <div class="impact-default-row">
+          <span class="impact-default-type">${d.file_type.charAt(0).toUpperCase()+d.file_type.slice(1)}</span>
+          <input class="impact-default-input" type="number" min="0.1" step="0.5" value="${d.default_hours}" id="idef-${d.file_type}" />
+          <span class="impact-default-unit">hrs</span>
+          <button class="btn btn-sm impact-default-save" onclick="saveImpactDefault('${d.file_type}')">Save</button>
+        </div>`).join('')}
+      </div>
+    </div>` : '';
+
+  const breakdownSection = eventBreakdown.length ? `
+    <div class="impact-section">
+      <h3 class="impact-section-title">Breakdown by Event</h3>
+      <div class="impact-breakdown-list">
+        ${eventBreakdown.map(ev => {
+          const pct = totalHours > 0 ? Math.round(ev.hours / totalHours * 100) : 0;
+          return `
+          <div class="impact-breakdown-row">
+            <div class="impact-breakdown-info">
+              <span class="impact-breakdown-name">${esc(ev.name)}</span>
+              <span class="impact-breakdown-meta">${ev.count} file${ev.count!==1?'s':''} · ${ev.hours.toFixed(1)} hrs</span>
+            </div>
+            <div class="impact-breakdown-bar-wrap">
+              <div class="impact-breakdown-bar" style="width:${pct}%"></div>
+            </div>
+            <span class="impact-breakdown-pct">${pct}%</span>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>` : '';
+
+  return `
+    <div class="page-header">
+      <div><h1 class="page-title">Impact</h1><p class="page-subtitle">Your time investment & creative output</p></div>
+    </div>
+    <div class="impact-stats-row">
+      ${iStatCard('Total Hours Invested', totalHours.toFixed(1)+'h', 'across all files', hoursIcon)}
+      ${iStatCard('Equivalent Days', totalDays+'d', '(8 hrs = 1 working day)', daysIcon)}
+      ${iStatCard('Total Files', totalFiles, '', filesIcon)}
+      ${iStatCard('Videos Produced', totalVideos, '', videoIcon2)}
+    </div>
+    ${defaultsTable}
+    ${breakdownSection}
+    ${!totalFiles ? `<div class="empty-state"><div class="empty-icon">${hoursIcon}</div><p>No files yet — upload files to see your impact stats.</p></div>` : ''}
+  `;
+}
+
+async function saveImpactDefault(fileType) {
+  const input = document.getElementById('idef-' + fileType);
+  if (!input) return;
+  const val = parseFloat(input.value);
+  if (isNaN(val) || val <= 0) { toast('Enter a valid number of hours', 'error'); return; }
+  const { error } = await db.from('impact_defaults').update({ default_hours: val, updated_at: new Date().toISOString() }).eq('file_type', fileType);
+  if (error) { toast(error.message, 'error'); return; }
+  const idx = State.impactDefaults.findIndex(d => d.file_type === fileType);
+  if (idx >= 0) State.impactDefaults[idx].default_hours = val;
+  toast('Default updated', 'success');
+}
+
+// ── Deck ──────────────────────────────────────────────────────
+function getSlidesEmbedUrl(url) {
+  if (!url) return '';
+  const m = url.match(/\/presentation\/d\/([a-zA-Z0-9_-]+)/);
+  if (!m) return '';
+  return `https://docs.google.com/presentation/d/${m[1]}/embed?start=false&loop=false`;
+}
+
+function renderDeck() {
+  const isAdmin = State.isAdmin;
+  const list = State.decks;
+  const deckCard = d => {
+    const embedUrl = getSlidesEmbedUrl(d.slides_url);
+    const folder = d.folder_id ? State.folders.find(f => f.id === d.folder_id) : null;
+    const event  = d.event_id  ? State.events.find(e => e.id === d.event_id)  : null;
+    return `
+    <div class="deck-card">
+      <div class="deck-preview">
+        ${embedUrl
+          ? `<iframe src="${embedUrl}" frameborder="0" allowfullscreen class="deck-iframe" tabindex="-1"></iframe>`
+          : `<div class="deck-no-preview"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width:36px;height:36px;opacity:0.3"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg><span>No preview</span></div>`}
+      </div>
+      <div class="deck-info">
+        <p class="deck-title">${esc(d.title)}</p>
+        ${d.description ? `<p class="deck-desc">${esc(d.description)}</p>` : ''}
+        <div class="deck-tags">
+          ${folder ? `<span class="deck-tag deck-tag-folder"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:11px;height:11px"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>${esc(folder.name)}</span>` : ''}
+          ${event  ? `<span class="deck-tag deck-tag-event"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:11px;height:11px"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>${esc(event.name)}</span>` : ''}
+        </div>
+      </div>
+      ${isAdmin ? `
+      <div class="deck-actions">
+        ${d.slides_url ? `<a href="${d.slides_url}" target="_blank" rel="noopener" class="btn btn-ghost btn-xs" onclick="event.stopPropagation()">Open</a>` : ''}
+        <button class="btn btn-ghost btn-xs" onclick="editDeck('${d.id}')">Edit</button>
+        <button class="btn btn-danger btn-xs" onclick="deleteDeck('${d.id}')">Delete</button>
+      </div>` : `
+      <div class="deck-actions">
+        ${d.slides_url ? `<a href="${d.slides_url}" target="_blank" rel="noopener" class="btn btn-ghost btn-xs">Open</a>` : ''}
+      </div>`}
+    </div>`;
+  };
+  const deckIcon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width:48px;height:48px"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>`;
+  return `
+    <div class="page-header">
+      <div><h1 class="page-title">Deck</h1><p class="page-subtitle">Presentation decks linked to your work</p></div>
+      ${isAdmin ? `<button class="btn btn-sm" style="background:linear-gradient(135deg,#3730A3,#4338CA);color:#fff;border:none;padding:8px 16px;border-radius:10px;font-weight:600;cursor:pointer" onclick="openModal('deck-modal')">+ New Deck</button>` : ''}
+    </div>
+    ${list.length
+      ? `<div class="deck-grid stagger">${list.map(deckCard).join('')}</div>`
+      : `<div class="empty-state"><div class="empty-icon">${deckIcon}</div><p>No decks yet${isAdmin ? ' — create your first deck' : ''}</p></div>`}
+  `;
+}
+
+async function saveDeck() {
+  const id    = document.getElementById('deck-edit-id').value;
+  const title = document.getElementById('dk-title').value.trim();
+  if (!title) { toast('Title is required', 'error'); return; }
+  const data = {
+    title,
+    description: document.getElementById('dk-desc').value.trim() || null,
+    slides_url:  document.getElementById('dk-url').value.trim() || null,
+    folder_id:   document.getElementById('dk-folder').value || null,
+    event_id:    document.getElementById('dk-event').value  || null,
+  };
+  let err;
+  if (id) ({ error: err } = await db.from('decks').update(data).eq('id', id));
+  else    ({ error: err } = await db.from('decks').insert(data));
+  if (err) { toast(err.message, 'error'); return; }
+  toast(id ? 'Deck updated' : 'Deck created', 'success');
+  closeModal('deck-modal');
+  await loadDecks(); renderView();
+}
+
+function editDeck(id) {
+  const d = State.decks.find(x => x.id === id);
+  if (!d) return;
+  openModal('deck-modal');
+  document.getElementById('deck-modal-title').textContent = 'Edit Deck';
+  document.getElementById('deck-save-label').textContent  = 'Save Changes';
+  document.getElementById('deck-edit-id').value = id;
+  document.getElementById('dk-title').value     = d.title || '';
+  document.getElementById('dk-desc').value      = d.description || '';
+  document.getElementById('dk-url').value       = d.slides_url || '';
+  setTimeout(() => {
+    const f = document.getElementById('dk-folder'); if (f) f.value = d.folder_id || '';
+    const e = document.getElementById('dk-event');  if (e) e.value = d.event_id  || '';
+  }, 10);
+}
+
+async function deleteDeck(id) {
+  const { error } = await db.from('decks').update({ is_deleted: true }).eq('id', id);
+  if (error) { toast(error.message, 'error'); return; }
+  toast('Deck deleted', 'info');
+  await loadDecks(); renderView();
+}
+
+function injectDeckModal() {
+  if (document.getElementById('deck-modal')) return;
+  const folderOpts = State.folders.map(f => `<option value="${f.id}">${esc(f.path || f.name)}</option>`).join('');
+  const eventOpts  = State.events.map(e  => `<option value="${e.id}">${esc(e.name)}</option>`).join('');
+  document.body.insertAdjacentHTML('beforeend', `
+  <div class="modal-overlay" id="deck-modal">
+    <div class="modal" style="max-width:460px">
+      <div class="modal-header">
+        <div class="modal-header-left">
+          <div class="modal-header-icon" style="background:linear-gradient(135deg,#3730A3,#4338CA)">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px;color:#fff"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          </div>
+          <div>
+            <h3 id="deck-modal-title">New Deck</h3>
+            <p>Add a presentation deck</p>
+          </div>
+        </div>
+        <button class="btn btn-ghost btn-icon" onclick="closeModal('deck-modal')">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="deck-edit-id" />
+        <div class="field-wrap animated-field">
+          <input type="text" id="dk-title" placeholder=" " autocomplete="off" onkeydown="if(event.key==='Enter') saveDeck()" />
+          <label for="dk-title">Deck Title <span class="req">*</span></label>
+        </div>
+        <div class="field-wrap animated-field">
+          <input type="text" id="dk-desc" placeholder=" " />
+          <label for="dk-desc">Description (optional)</label>
+        </div>
+        <div class="field-wrap animated-field">
+          <input type="url" id="dk-url" placeholder=" " />
+          <label for="dk-url">Google Slides URL</label>
+        </div>
+        <p class="deck-url-hint">Paste the public "Anyone can view" share link. The first slide will be shown as preview.</p>
+        <div class="field-wrap field-wrap-select animated-field">
+          <select id="dk-folder"><option value="">No folder</option>${folderOpts}</select>
+          <label for="dk-folder">Link to Folder (optional)</label>
+        </div>
+        <div class="field-wrap field-wrap-select animated-field">
+          <select id="dk-event"><option value="">No event</option>${eventOpts}</select>
+          <label for="dk-event">Link to Event (optional)</label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" onclick="closeModal('deck-modal')">Cancel</button>
+        <button class="btn btn-primary" onclick="saveDeck()" style="background:linear-gradient(135deg,#3730A3,#4338CA)">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><rect x="2" y="3" width="20" height="14" rx="2"/></svg>
+          <span id="deck-save-label">Create Deck</span>
+        </button>
+      </div>
+    </div>
+  </div>`);
+}
 async function loadFiles() {
   const { data } = await db.from('files').select('*').eq('is_deleted', false).order('created_at', { ascending: false });
   State.files = data || [];
@@ -306,6 +563,14 @@ async function loadFiles() {
 async function loadEvents() {
   const { data } = await db.from('events').select('*').eq('is_deleted', false).order('event_date', { ascending: false });
   State.events = data || [];
+}
+async function loadImpactDefaults() {
+  const { data } = await db.from('impact_defaults').select('*');
+  State.impactDefaults = data || [];
+}
+async function loadDecks() {
+  const { data } = await db.from('decks').select('*').eq('is_deleted', false).order('created_at', { ascending: false });
+  State.decks = data || [];
 }
 
 // ── Router ────────────────────────────────────────────────────
@@ -342,7 +607,8 @@ function renderView() {
     images:    renderImages,   events: renderEvents,
     favorites: renderFavorites, recent: renderRecent,
     archive:   renderArchive,  trash: renderTrash,
-    settings:  renderSettings,
+    settings:  renderSettings, impact: renderImpact,
+    deck:      renderDeck,
   };
   if (window._clockInterval) { clearInterval(window._clockInterval); window._clockInterval = null; }
   c.innerHTML = (views[State.view] || renderDashboard)();
@@ -744,7 +1010,23 @@ function renderFolders() {
         ${fileGrid(folderFiles)}
       ` : ''}
 
-      ${!subFolders.length && !folderFiles.length
+      ${(() => {
+        const fDecks = State.decks.filter(d => d.folder_id === currentFolder.id);
+        if (!fDecks.length) return '';
+        return `<div class="event-section-header"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;color:#4338CA"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg><span style="margin-left:4px">Decks</span><span class="event-section-count" style="background:#4338CA">${fDecks.length}</span></div>
+        <div class="deck-grid stagger">
+          ${fDecks.map(d => {
+            const embedUrl = getSlidesEmbedUrl(d.slides_url);
+            return `<div class="deck-card">
+              <div class="deck-preview">${embedUrl ? `<iframe src="${embedUrl}" frameborder="0" class="deck-iframe" tabindex="-1"></iframe>` : `<div class="deck-no-preview"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width:36px;height:36px;opacity:0.3"><rect x="2" y="3" width="20" height="14" rx="2"/></svg><span>No preview</span></div>`}</div>
+              <div class="deck-info"><p class="deck-title">${esc(d.title)}</p>${d.description?`<p class="deck-desc">${esc(d.description)}</p>`:''}</div>
+              <div class="deck-actions">${d.slides_url?`<a href="${d.slides_url}" target="_blank" rel="noopener" class="btn btn-ghost btn-xs">Open</a>`:''}</div>
+            </div>`;
+          }).join('')}
+        </div>`;
+      })()}
+
+      ${!subFolders.length && !folderFiles.length && !State.decks.filter(d => d.folder_id === currentFolder.id).length
         ? emptyState('Empty folder', State.isAdmin ? 'Upload files or create sub-folders' : 'Nothing here yet', folderIcon())
         : ''}`;
   }
@@ -1095,7 +1377,24 @@ function renderEventDetail(evId) {
     ${relFiles.length ? `
       <div class="event-section-header"><span>Files</span><span class="event-section-count">${relFiles.length}</span></div>
       ${fileGrid(relFiles)}`
-    : (!relFolders.length ? emptyState('No files linked yet', State.isAdmin?'Upload files and link this event':'Nothing here yet', calIcon()) : '')}`;
+    : (!relFolders.length ? emptyState('No files linked yet', State.isAdmin?'Upload files and link this event':'Nothing here yet', calIcon()) : '')}
+
+    ${(() => {
+      const relDecks = State.decks.filter(d => d.event_id === evId);
+      if (!relDecks.length) return '';
+      const deckIcon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;color:#4338CA"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>`;
+      return `<div class="event-section-header">${deckIcon}<span style="margin-left:4px">Decks</span><span class="event-section-count" style="background:#4338CA">${relDecks.length}</span></div>
+      <div class="deck-grid stagger">
+        ${relDecks.map(d => {
+          const embedUrl = getSlidesEmbedUrl(d.slides_url);
+          return `<div class="deck-card">
+            <div class="deck-preview">${embedUrl ? `<iframe src="${embedUrl}" frameborder="0" class="deck-iframe" tabindex="-1"></iframe>` : `<div class="deck-no-preview"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width:36px;height:36px;opacity:0.3"><rect x="2" y="3" width="20" height="14" rx="2"/></svg><span>No preview</span></div>`}</div>
+            <div class="deck-info"><p class="deck-title">${esc(d.title)}</p>${d.description?`<p class="deck-desc">${esc(d.description)}</p>`:''}</div>
+            <div class="deck-actions">${d.slides_url?`<a href="${d.slides_url}" target="_blank" rel="noopener" class="btn btn-ghost btn-xs">Open</a>`:''}</div>
+          </div>`;
+        }).join('')}
+      </div>`;
+    })()}`;
 }
 
 function eventCard(ev) {
@@ -2102,6 +2401,7 @@ const MODAL_THEMES = {
   'upload-modal': 'purple',
   'folder-modal': 'blue',
   'event-modal':  'orange',
+  'deck-modal':   'blue',
 };
 function viewTheme() {
   const map = {
@@ -2165,6 +2465,18 @@ function openModal(id) {
     const ut = document.getElementById('url-title'); if (ut) ut.value = '';
     const uw = document.getElementById('url-preview-wrap'); if (uw) { uw.innerHTML = ''; uw.style.display = 'none'; }
     const tw = document.getElementById('url-title-wrap'); if (tw) tw.style.display = 'none';
+  }
+  if (id === 'deck-modal') {
+    document.getElementById('deck-modal-title').textContent = 'New Deck';
+    document.getElementById('deck-save-label').textContent  = 'Create Deck';
+    document.getElementById('deck-edit-id').value = '';
+    document.getElementById('dk-title').value = '';
+    document.getElementById('dk-desc').value  = '';
+    document.getElementById('dk-url').value   = '';
+    setTimeout(() => {
+      const f = document.getElementById('dk-folder'); if (f) f.value = '';
+      const e = document.getElementById('dk-event');  if (e) e.value = '';
+    }, 10);
   }
   if (id === 'event-modal') {
     document.getElementById('event-modal-title').textContent = 'New Event';

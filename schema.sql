@@ -10,6 +10,8 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 -- ============================================================
 -- DROP OLD TABLES (cascade removes all FK deps)
 -- ============================================================
+DROP TABLE IF EXISTS decks           CASCADE;
+DROP TABLE IF EXISTS impact_defaults CASCADE;
 DROP TABLE IF EXISTS share_links  CASCADE;
 DROP TABLE IF EXISTS files        CASCADE;
 DROP TABLE IF EXISTS projects     CASCADE;
@@ -71,6 +73,7 @@ CREATE TABLE files (
   width         INTEGER,
   height        INTEGER,
   is_favorite   BOOLEAN DEFAULT FALSE,
+  time_spent    NUMERIC DEFAULT NULL,
   is_deleted    BOOLEAN DEFAULT FALSE,
   deleted_at    TIMESTAMPTZ,
   created_at    TIMESTAMPTZ DEFAULT NOW(),
@@ -86,6 +89,24 @@ CREATE TABLE share_links (
   view_count      INTEGER DEFAULT 0,
   is_active       BOOLEAN DEFAULT TRUE,
   created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE impact_defaults (
+  file_type     TEXT PRIMARY KEY,
+  default_hours NUMERIC NOT NULL DEFAULT 1,
+  updated_at    TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE decks (
+  id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  title       TEXT NOT NULL,
+  description TEXT,
+  slides_url  TEXT,
+  folder_id   UUID REFERENCES folders(id),
+  event_id    UUID REFERENCES events(id),
+  is_deleted  BOOLEAN DEFAULT FALSE,
+  created_at  TIMESTAMPTZ DEFAULT NOW(),
+  updated_at  TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- ============================================================
@@ -149,6 +170,21 @@ CREATE POLICY "auth_write_files"        ON files       FOR ALL USING (auth.uid()
 DROP POLICY IF EXISTS "auth_write_share_links"  ON share_links;
 CREATE POLICY "auth_write_share_links"  ON share_links FOR ALL USING (auth.uid() IS NOT NULL);
 
+ALTER TABLE impact_defaults ENABLE ROW LEVEL SECURITY;
+ALTER TABLE decks           ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "public_read_impact_defaults" ON impact_defaults;
+CREATE POLICY "public_read_impact_defaults" ON impact_defaults FOR SELECT USING (true);
+
+DROP POLICY IF EXISTS "auth_write_impact_defaults"  ON impact_defaults;
+CREATE POLICY "auth_write_impact_defaults"  ON impact_defaults FOR ALL USING (auth.uid() IS NOT NULL);
+
+DROP POLICY IF EXISTS "public_read_decks" ON decks;
+CREATE POLICY "public_read_decks" ON decks FOR SELECT USING (NOT is_deleted);
+
+DROP POLICY IF EXISTS "auth_write_decks"  ON decks;
+CREATE POLICY "auth_write_decks"  ON decks FOR ALL USING (auth.uid() IS NOT NULL);
+
 -- ============================================================
 -- STORAGE BUCKETS
 -- ============================================================
@@ -194,3 +230,13 @@ INSERT INTO categories (name, color) VALUES
   ('Personal Projects','#173B2F'),
   ('Other',           '#71877B')
 ON CONFLICT (name) DO NOTHING;
+
+-- Impact defaults (video=8hrs, image=0.5, document=1, design=2, archive=0.5, other=1)
+INSERT INTO impact_defaults (file_type, default_hours) VALUES
+  ('video',    8),
+  ('image',    0.5),
+  ('document', 1),
+  ('design',   2),
+  ('archive',  0.5),
+  ('other',    1)
+ON CONFLICT (file_type) DO NOTHING;
